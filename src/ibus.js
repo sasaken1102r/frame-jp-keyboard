@@ -93,6 +93,21 @@ export const createIBusEngine = ({ onCommit, onUpdate }) => {
   let previousEngine = null;
   let lastSignalAt = 0;
   let lutSeq = 0;
+  /** Keys sent, by kind (debug: shows that previews never send Return or digits). */
+  const keyCounts = { Return: 0, Escape: 0, space: 0, Tab: 0, digit: 0, cursor: 0, other: 0 };
+
+  /**
+   * Count a key stroke by kind.
+   * @param {number} keyval - X keysym
+   * @returns {void}
+   * @example
+   * countKey(0xff0d)
+   */
+  const countKey = (keyval) => {
+    const kind = { 0xff0d: 'Return', 0xff1b: 'Escape', 0x20: 'space', 0xff09: 'Tab' }[keyval]
+      ?? (keyval >= 0x30 && keyval <= 0x39 ? 'digit' : [0xff52, 0xff54, 0xff55, 0xff56, 0xff53].includes(keyval) ? 'cursor' : 'other');
+    keyCounts[kind] += 1;
+  };
   let destroyed = false;
 
   /**
@@ -309,7 +324,10 @@ export const createIBusEngine = ({ onCommit, onUpdate }) => {
   const press = async (strokes) => {
     if (!ctx || destroyed) throw new Error('IBus context missing');
     const handled = [];
-    for (const s of strokes) handled.push(!!await ctx.process_key_event(s.keyval, 0, s.state));
+    for (const s of strokes) {
+      countKey(s.keyval);
+      handled.push(!!await ctx.process_key_event(s.keyval, 0, s.state));
+    }
     return handled;
   };
 
@@ -432,7 +450,7 @@ export const createIBusEngine = ({ onCommit, onUpdate }) => {
     release,
     destroy,
     get info() {
-      return { acquired, previousEngine, hasContext: !!ctx };
+      return { acquired, previousEngine, hasContext: !!ctx, keyCounts: { ...keyCounts } };
     },
   };
 };

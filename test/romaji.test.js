@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { kanaToRomaji, textToStrokes, isTypable, digitStroke, KEYSYM } from '../src/romaji.js';
+import { kanaToRomaji, textToStrokes, isTypable, KEYSYM } from '../src/romaji.js';
 import { KANA_KEYS } from '../src/kana-table.js';
 import { cycleModifier } from '../src/modifiers.js';
 
@@ -45,12 +45,6 @@ test('untypable characters are skipped and reported', () => {
   assert.deepEqual(result.skipped, ['漢']);
 });
 
-test('digit strokes pick 1..9 then 0', () => {
-  assert.equal(digitStroke(0).keyval, 0x31);
-  assert.equal(digitStroke(4).keyval, 0x35);
-  assert.equal(digitStroke(9).keyval, 0x30);
-  assert.equal(KEYSYM.Return, 0xff0d);
-});
 
 test('IBus engine reports unavailable without the native binding', async () => {
   const { createIBusEngine } = await import('../src/ibus.js');

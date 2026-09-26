@@ -82,6 +82,8 @@ const install = () => {
   let dictionary = null;
   /** @type {import('./english.js').Suggestion[]} */
   let suggestions = [];
+  /** @type {string[]} Candidates as last drawn, so a tap commits exactly what the user saw. */
+  let shownCandidates = [];
 
   /**
    * The English dictionary, decoded on first use (~20 ms for 40,000 words).
@@ -145,8 +147,10 @@ const install = () => {
       renderQueued = false;
       try {
         suggestions = currentSuggestions();
+        const view = ime.view();
+        shownCandidates = view.candidates;
         const shiftShown = autoCapital() ? 'once' : shift.state;
-        overlay?.render({ page: pages.page, mode: pages.mode, shift: shiftShown, view: ime.view(), suggestions });
+        overlay?.render({ page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions });
       } catch (error) {
         warn('render failed', error);
       }
@@ -301,7 +305,7 @@ const install = () => {
           onKana: (keyId, direction) => ime.kana(keyId, direction),
           onChar: handleChar,
           onAction: handleAction,
-          onCandidate: (index) => ime.select(index),
+          onCandidate: (index) => ime.select(index, shownCandidates[index]),
           onSuggestion: pickSuggestion,
           onEnable: () => setEnabled(true),
         });

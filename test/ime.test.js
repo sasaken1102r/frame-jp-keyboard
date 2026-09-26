@@ -14,6 +14,8 @@ const KEY_NAMES = {
   [KEYSYM.Escape]: 'ESC',
   [KEYSYM.Left]: 'L',
   [KEYSYM.Right]: 'R',
+  [KEYSYM.Up]: 'UP',
+  [KEYSYM.Down]: 'DOWN',
   [KEYSYM.Page_Down]: 'PGDN',
   [KEYSYM.Page_Up]: 'PGUP',
   [KEYSYM.space]: 'SPC',
@@ -26,7 +28,8 @@ const KEY_NAMES = {
  * @param {Record<string, string[]|[string, string[]][]>} dict - Reading -> candidates of a single
  *   segment, or a list of [segment reading, candidates] for a multi-segment conversion
  * @param {Record<string, string[]>} [predictions] - Reading -> predictions
- * @returns {object} Fake engine with `strokes` and `calls` logs
+ * @returns {object} Fake engine with `strokes`, `calls` and `learned` logs. Like anthy, only Return
+ *   learns (commit_segment / commit_prediction): a learned candidate comes first next time.
  * @example
  * fakeEngine({ かんじ: ['漢字', '感じ'] })
  */
@@ -39,10 +42,15 @@ const fakeEngine = (dict = {}, predictions = {}) => {
   let mode = 'input';
   /** @type {{reading: string, cands: string[], sel: number}[]} */
   let segs = [];
+  /** Current segment (anthy's __cursor_pos). */
+  let cur = 0;
+  /** Learned choices: reading -> candidate that comes first next time. */
+  const preferred = new Map();
   const engine = {
     state,
     strokes: [],
     calls: [],
+    learned: [],
     onCommit: () => {},
     fail: false,
     acquire: async () => { engine.calls.push('acquire'); },
@@ -79,16 +87,28 @@ const fakeEngine = (dict = {}, predictions = {}) => {
     lut([], false);
   };
   /**
-   * Show the conversion: every segment's selected candidate, table of the first segment.
+   * Show the conversion: every segment's selected candidate; the table and cursor of the current one.
    * @returns {void}
    * @example
    * showConv()
    */
   const showConv = () => {
     state.preedit = segs.map((s) => s.cands[s.sel]).join('');
-    state.cursor = 0;
-    state.candidateCursor = segs[0].sel;
-    lut(segs[0].cands, true);
+    state.cursor = segs.slice(0, cur).map((s) => s.cands[s.sel]).join('').length;
+    state.candidateCursor = segs[cur].sel;
+    lut(segs[cur].cands, true);
+  };
+  /**
+   * Put a learned candidate first.
+   * @param {string} readingText - Reading
+   * @param {string[]} cands - Candidates
+   * @returns {string[]} Reordered candidates
+   * @example
+   * withLearned('きかい', ['機械', '器械'])
+   */
+  const withLearned = (readingText, cands) => {
+    const p = preferred.get(readingText);
+    return p && cands.includes(p) ? [p, ...cands.filter((c) => c !== p)] : cands;
   };
   /**
    * Drop the composition and go back to input mode.
@@ -124,28 +144,42 @@ const fakeEngine = (dict = {}, predictions = {}) => {
   const handle = ({ keyval, state: mods }) => {
     const name = KEY_NAMES[keyval] ?? String.fromCharCode(keyval);
     engine.strokes.push(mods & SHIFT_MASK ? `S-${name}` : name);
+    if (/^[0-9]$/.test(name)) throw new Error('digit keys commit without learning; must not be used');
     if (mode === 'conv' || mode === 'pred') {
+      const seg = mode === 'conv' ? segs[cur] : null;
+      const size = mode === 'conv' ? seg.cands.length : state.candidates.length;
+      let sel = mode === 'conv' ? seg.sel : state.candidateCursor;
       if (name === 'ESC') { showInput(); return true; }
-      if (name === 'RET') { commit(state.preedit); return true; }
-      if (mode === 'conv' && name === 'SPC') {
-        segs[0].sel = (segs[0].sel + 1) % segs[0].cands.length;
+      if (name === 'RET') {
+        if (mode === 'conv') {
+          for (const sg of segs) {
+            engine.learned.push(sg.cands[sg.sel]);
+            preferred.set(sg.reading, sg.cands[sg.sel]);
+          }
+        } else {
+          engine.learned.push(state.preedit);
+        }
+        commit(state.preedit);
+        return true;
+      }
+      if (mode === 'conv' && name === 'R') {
+        if (cur + 1 >= segs.length) return true; // last segment: nothing happens, no signal
+        cur += 1;
         showConv();
         return true;
       }
-      if (name === 'PGDN') { state.candidateCursor = Math.min(state.candidateCursor + state.pageSize, state.candidates.length - 1); return true; }
-      if (/^[0-9]$/.test(name)) {
-        const page = state.candidateCursor - (state.candidateCursor % state.pageSize);
-        const picked = state.candidates[page + ((Number(name) + 9) % 10)];
-        if (mode === 'pred' || segs.length === 1) { commit(picked); return true; }
-        // Commit the first segment, keep converting the rest.
-        const rest = segs.slice(1);
-        const restReading = rest.map((s) => s.reading).join('');
-        engine.onCommit(picked);
-        reading = Array.from(restReading);
-        caret = reading.length;
-        segs = rest;
+      if (name === 'SPC' || name === 'DOWN') sel = Math.min(sel + 1, size - 1);
+      else if (name === 'UP') sel = Math.max(sel - 1, 0);
+      else if (name === 'PGDN' && sel + state.pageSize < size) sel += state.pageSize;
+      else if (name === 'PGUP' && sel - state.pageSize >= 0) sel -= state.pageSize;
+      else return true;
+      if (mode === 'conv') {
+        seg.sel = sel;
         showConv();
-        return true;
+      } else {
+        state.candidateCursor = sel;
+        state.preedit = state.candidates[sel];
+        lut(state.candidates, true);
       }
       return true;
     }
@@ -154,8 +188,9 @@ const fakeEngine = (dict = {}, predictions = {}) => {
       const text = reading.join('');
       const entry = dict[text] ?? [text];
       segs = typeof entry[0] === 'string'
-        ? [{ reading: text, cands: [...entry.filter((c) => c !== text), text], sel: 0 }]
-        : entry.map(([r, cands]) => ({ reading: r, cands: [...cands, r], sel: 0 }));
+        ? [{ reading: text, cands: withLearned(text, [...entry.filter((c) => c !== text), text]), sel: 0 }]
+        : entry.map(([r, cands]) => ({ reading: r, cands: withLearned(r, [...cands, r]), sel: 0 }));
+      cur = 0;
       mode = 'conv';
       showConv();
       return true;
@@ -166,7 +201,7 @@ const fakeEngine = (dict = {}, predictions = {}) => {
       mode = 'pred';
       state.preedit = preds[0];
       state.candidateCursor = 0;
-      lut(preds, true);
+      lut([...preds], true);
       return true;
     }
     if (name === 'RET') { commit(reading.join('')); return true; }
@@ -319,15 +354,76 @@ test('typing while converting commits the conversion first', async () => {
   assert.equal(ime.view().preedit, 'あ');
 });
 
-test('tapping a candidate on another page pages there and picks it with a digit', async () => {
+test('tapping a candidate moves the cursor with Page_Down/Down (never digits), then Return learns it', async () => {
   const engine = fakeEngine({ かんじ: ['漢字', '監事', '莞爾', '幹事', '感じ', '巻次'] });
   const { ime, out } = setup(engine);
   await ime.kanaText('かんじ');
   await ime.space();
   engine.strokes.length = 0;
-  await ime.select(6); // the 7th candidate: "かんじ"
-  assert.deepEqual(engine.strokes, ['PGDN', '2']);
+  await ime.select(6, 'かんじ'); // the 7th candidate
+  assert.deepEqual(engine.strokes, ['PGDN', 'DOWN', 'RET']);
   assert.deepEqual(out, [{ text: 'かんじ' }]);
+  assert.deepEqual(engine.learned, ['かんじ']);
+  assert.equal(ime.view().phase, 'idle');
+});
+
+test('a picked candidate comes first in the next conversion (きかい: 器械, then 機械 again)', async () => {
+  const engine = fakeEngine({ きかい: ['機械', '器械', '奇怪'] });
+  const { ime, out } = setup(engine);
+  await ime.kanaText('きかい');
+  await ime.space();
+  await ime.select(1, '器械');
+  await ime.kanaText('きかい');
+  await ime.space();
+  assert.equal(ime.view().candidates[0], '器械');
+  await ime.select(1, '機械');
+  await ime.kanaText('きかい');
+  await ime.space();
+  assert.equal(ime.view().candidates[0], '機械');
+  assert.deepEqual(out, [{ text: '器械' }, { text: '機械' }]);
+});
+
+test('a candidate that moved in the table is found by its text; a vanished one commits nothing', async () => {
+  const engine = fakeEngine({ かんじ: ['漢字', '感じ'] });
+  const { ime, out } = setup(engine);
+  await ime.kanaText('かんじ');
+  await ime.space();
+  await ime.select(0, '感じ'); // index is stale, text wins
+  assert.deepEqual(out, [{ text: '感じ' }]);
+  await ime.kanaText('かんじ');
+  await ime.space();
+  await ime.select(0, '存在しない');
+  assert.equal(ime.view().phase, 'converting');
+  assert.equal(out.length, 1);
+});
+
+test('tapping a candidate of a non-last segment moves on to the next segment; ⏎ commits all with learning', async () => {
+  const engine = fakeEngine(SENTENCE);
+  const { ime, out } = setup(engine);
+  await ime.kanaText('きょうはいいてんき');
+  await ime.space();
+  engine.strokes.length = 0;
+  await ime.select(1, '京は');
+  assert.deepEqual(engine.strokes, ['DOWN', 'R']);
+  const v = ime.view();
+  assert.equal(v.phase, 'converting');
+  assert.equal(v.preedit, '京はいい天気');
+  assert.deepEqual(v.candidates, ['いい天気', 'いいてんき']);
+  assert.deepEqual(out, []);
+  await ime.enter();
+  assert.deepEqual(out, [{ text: '京はいい天気' }]);
+  assert.deepEqual(engine.learned, ['京は', 'いい天気']);
+});
+
+test('tapping a candidate of the last segment commits everything', async () => {
+  const engine = fakeEngine(SENTENCE);
+  const { ime, out } = setup(engine);
+  await ime.kanaText('きょうはいいてんき');
+  await ime.space();
+  await ime.select(0, '今日は');
+  await ime.select(1, 'いいてんき');
+  assert.deepEqual(out, [{ text: '今日はいいてんき' }]);
+  assert.deepEqual(engine.learned, ['今日は', 'いいてんき']);
   assert.equal(ime.view().phase, 'idle');
 });
 
@@ -477,30 +573,57 @@ test('tapping the first live candidate commits the whole sentence', async () => 
   assert.equal(ime.view().phase, 'idle');
 });
 
-test('a first-segment candidate commits that segment and keeps the rest composing', async () => {
+test('a first-segment live candidate converts, picks it on segment 0 and moves to the next segment', async () => {
   const engine = fakeEngine(SENTENCE);
   const { ime, fire, out } = setup(engine);
   await ime.kanaText('きょうはいいてんき');
   await fire();
-  await ime.select(ime.view().candidates.indexOf('京は'));
-  assert.deepEqual(out, [{ text: '京は' }]);
-  assert.equal(ime.view().phase, 'composing');
-  assert.equal(ime.view().preedit, 'いいてんき');
-  await fire(); // candidates follow the remaining reading
-  assert.equal(ime.view().candidates[0], 'いいてんき');
+  await ime.select(ime.view().candidates.indexOf('京は'), '京は');
+  assert.deepEqual(out, []);
+  assert.equal(ime.view().phase, 'converting');
+  assert.equal(ime.view().preedit, '京はいい天気');
+  await ime.enter();
+  assert.deepEqual(out, [{ text: '京はいい天気' }]);
+  assert.deepEqual(engine.learned, ['京は', 'いい天気']);
 });
 
-test('predictions, hiragana and katakana candidates commit the whole reading', async () => {
+test('the whole-sentence live candidate commits with Return, so anthy learns it', async () => {
+  const engine = fakeEngine(SENTENCE);
+  const { ime, fire, out } = setup(engine);
+  await ime.kanaText('きょうはいいてんき');
+  await fire();
+  await ime.select(0, '今日はいい天気');
+  assert.deepEqual(out, [{ text: '今日はいい天気' }]);
+  assert.deepEqual(engine.learned, ['今日は', 'いい天気']);
+});
+
+test('live previews never send Return and never learn, however often the reading is typed', async () => {
+  const engine = fakeEngine({ きかい: ['機械', '器械'] }, { きかい: ['機械的'] });
+  const { ime, fire } = setup(engine);
+  for (let i = 0; i < 3; i += 1) {
+    await ime.kanaText('きかい');
+    await fire();
+    assert.equal(ime.view().candidates[0], '機械');
+    await ime.release();
+  }
+  assert.equal(engine.strokes.includes('RET'), false);
+  assert.deepEqual(engine.learned, []);
+});
+
+test('predictions commit through anthy (Tab, cursor, Return); hiragana and katakana commit the reading', async () => {
   const engine = fakeEngine({}, { てん: ['天気です', '天才'] });
   const { ime, fire, out } = setup(engine);
   await ime.kanaText('てん');
   await fire();
   assert.deepEqual(ime.view().candidates, ['てん', '天気です', '天才', 'テン']);
-  await ime.select(2);
+  engine.strokes.length = 0;
+  await ime.select(2, '天才');
+  assert.deepEqual(engine.strokes, ['TAB', 'DOWN', 'RET']);
   assert.deepEqual(out, [{ text: '天才' }]);
+  assert.deepEqual(engine.learned, ['天才']);
   await ime.kanaText('てん');
   await fire();
-  await ime.select(3);
+  await ime.select(3, 'テン');
   assert.deepEqual(out.at(-1), { text: 'テン' });
   assert.equal(ime.view().phase, 'idle');
 });

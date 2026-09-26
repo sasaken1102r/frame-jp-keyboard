@@ -13,7 +13,9 @@ export const KEYSYM = Object.freeze({
   Return: 0xff0d,
   Escape: 0xff1b,
   Left: 0xff51,
+  Up: 0xff52,
   Right: 0xff53,
+  Down: 0xff54,
   Page_Up: 0xff55,
   Page_Down: 0xff56,
   space: 0x20,
@@ -108,13 +110,3 @@ export const textToStrokes = (text) => {
   }
   return { strokes, skipped };
 };
-
-/**
- * The digit key that picks candidate `indexInPage` on the current lookup-table page (1..9, then 0).
- * @param {number} indexInPage - Zero-based index within the page (0..9)
- * @returns {KeyStroke} The stroke
- * @example
- * digitStroke(0).keyval // 0x31 ("1")
- * digitStroke(9).keyval // 0x30 ("0")
- */
-export const digitStroke = (indexInPage) => stroke(0x30 + ((indexInPage + 1) % 10));

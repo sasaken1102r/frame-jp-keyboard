@@ -21,7 +21,7 @@
 // retype the mirror if not.
 import { createDebouncer, createGeneration, mergeCandidates } from './live.js';
 import { mirrorOf, mirrorText, applyOps, EMPTY_MIRROR } from './mirror.js';
-import { KEYSYM, SHIFT_MASK, stroke, digitStroke, textToStrokes } from './romaji.js';
+import { KEYSYM, SHIFT_MASK, stroke, textToStrokes } from './romaji.js';
 
 /** How long to wait for anthy's lookup table after 変換 / Escape (normally < 20 ms). */
 const LUT_TIMEOUT_MS = 300;
@@ -100,7 +100,7 @@ const PREDICT_MIN_WAIT_MS = 25;
  *   arrow: (direction: 'left'|'right') => Promise<void>,
  *   space: () => Promise<void>,
  *   enter: () => Promise<void>,
- *   select: (index: number) => Promise<void>,
+ *   select: (index: number, text?: string) => Promise<void>,
  *   replaceTail: (count: () => number, text: string) => Promise<void>,
  *   commitAll: () => Promise<void>,
  *   discard: () => Promise<void>,
@@ -589,22 +589,82 @@ export const createIme = ({
   });
 
   /**
-   * Pick an entry of the lookup table anthy is showing (conversion or prediction). anthy commits the
-   * segments up to the current one (behavior-on-select-candidate = 1, set by Steam) and converts
-   * the rest again.
+   * Move anthy's lookup-table cursor to a candidate with cursor keys (Page_Down/Page_Up, then
+   * Down/Up) and check, from the lookup-table signal, that it landed there.
+   *
+   * Never select with digit keys: in ibus-anthy a digit goes through __commit_nth_segment, which
+   * commits the text without anthy's commit_segment, so anthy never learns the choice. Cursor keys
+   * set the segment's candidate (do_cursor_down/up, page_down/up), and Return then commits every
+   * segment through commit_segment (or commit_prediction), which is what anthy learns from.
    * @param {number} index - Candidate index in the full list
+   * @param {string} text - The candidate expected at that index
+   * @returns {Promise<boolean>} True when the cursor is on the candidate
+   * @example
+   * await moveCursorTo(3, '器械')
+   */
+  const moveCursorTo = async (index, text) => {
+    for (let attempt = 0; attempt < 2 && active.state.candidateCursor !== index; attempt += 1) {
+      const st = active.state;
+      const pageSize = st.pageSize > 0 ? st.pageSize : 5;
+      let cursor = st.candidateCursor;
+      const keys = [];
+      while (index - cursor >= pageSize) {
+        keys.push(stroke(KEYSYM.Page_Down));
+        cursor += pageSize;
+      }
+      while (cursor - index >= pageSize) {
+        keys.push(stroke(KEYSYM.Page_Up));
+        cursor -= pageSize;
+      }
+      for (; cursor < index; cursor += 1) keys.push(stroke(KEYSYM.Down));
+      for (; cursor > index; cursor -= 1) keys.push(stroke(KEYSYM.Up));
+      const before = st.lutSignals;
+      await active.press(keys);
+      await active.waitFor((s) => s.lutApplied > before && s.candidateCursor === index, LUT_TIMEOUT_MS);
+    }
+    const s = active.state;
+    return s.lutVisible && s.candidateCursor === index && s.candidates[index] === text;
+  };
+
+  /**
+   * Whether the segment being converted is the last one: its candidate ends where the preedit ends.
+   * @returns {boolean} True for the last (or only) segment, and for a prediction
+   * @example
+   * onLastSegment()
+   */
+  const onLastSegment = () => {
+    const s = active.state;
+    const current = s.candidates[s.candidateCursor] ?? '';
+    return s.preedit.startsWith(current, s.cursor) && s.cursor + current.length >= s.preedit.length;
+  };
+
+  /**
+   * Take a candidate of the lookup table anthy is showing: move the cursor onto it, then either go
+   * on to the next segment (Right; still converting, the panel shows that segment's candidates) or,
+   * on the last segment, commit everything with Return so anthy learns every segment.
+   * @param {number} index - Candidate index in the full list
+   * @param {string} [text] - The candidate the user saw (defaults to the one at index now)
+   * @param {boolean} [commitAll=false] - Always commit with Return (predictions replace the whole reading)
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await pickInLookup(3)
+   * await pickInLookup(3, '器械')
    */
-  const pickInLookup = async (index) => {
-    const { candidateCursor, pageSize, candidates } = active.state;
-    if (!(index >= 0 && index < candidates.length) || !(pageSize > 0)) return;
-    const pageDelta = Math.floor(index / pageSize) - Math.floor(candidateCursor / pageSize);
-    const paging = Array.from({ length: Math.abs(pageDelta) }, () => stroke(pageDelta > 0 ? KEYSYM.Page_Down : KEYSYM.Page_Up));
-    await active.press([...paging, digitStroke(index % pageSize)]);
-    await active.settle();
-    if (!active.state.preedit) clearComposition();
+  const pickInLookup = async (index, text, commitAll = false) => {
+    const { candidates } = active.state;
+    const wanted = text ?? candidates[index];
+    const at = candidates[index] === wanted ? index : candidates.indexOf(wanted);
+    if (!wanted || at < 0) return;
+    if (!await moveCursorTo(at, wanted)) {
+      warn('candidate cursor did not reach the tapped candidate; nothing committed');
+      return;
+    }
+    if (commitAll || onLastSegment()) {
+      await commitInEngine();
+      return;
+    }
+    const before = active.state.lutSignals;
+    await active.press([stroke(KEYSYM.Right)]);
+    await active.waitFor((s) => s.lutApplied > before && s.lutVisible, LUT_TIMEOUT_MS);
   };
 
   /**
@@ -621,10 +681,11 @@ export const createIme = ({
   };
 
   /**
-   * Commit a live candidate. The whole sentence and the readings replace the whole composition; a
-   * first-segment candidate commits that segment and keeps the rest of the reading composing
-   * (like a smartphone IME), and a prediction replaces the whole reading. Picks go through anthy
-   * (so it learns them) whenever anthy produced the candidate.
+   * Commit a live candidate. Everything anthy produced is committed through anthy with Return, so
+   * anthy learns it: the whole sentence (変換, then Return), a first-segment candidate (変換, cursor
+   * onto it, then as for a tap during conversion: next segment, or Return on the last one) and a
+   * prediction (Tab, cursor onto it, Return = commit_prediction). The hiragana reading is committed
+   * with Return as typed, and katakana directly (nothing to learn).
    * @param {number} index - Index in the live list
    * @returns {Promise<void>} Resolves when committed
    * @example
@@ -665,21 +726,21 @@ export const createIme = ({
       await cancelConversion();
       return;
     }
-    await pickInLookup(at);
-    if (converting && active.state.preedit) await cancelConversion();
+    await pickInLookup(at, item.text, item.kind === 'prediction');
   };
 
   /**
    * Tap on a candidate: a live candidate while composing, or anthy's lookup table while converting.
    * @param {number} index - Candidate index as shown
+   * @param {string} [text] - The candidate as shown (guards against a table that changed meanwhile)
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await select(3)
+   * await select(3, '器械')
    */
-  const select = (index) => enqueue(async () => {
+  const select = (index, text) => enqueue(async () => {
     if (!active) return;
     if (converting) {
-      await pickInLookup(index);
+      await pickInLookup(index, text);
       return;
     }
     if (mirror.chars.length) await pickLive(index);
