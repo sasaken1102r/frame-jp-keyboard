@@ -1,0 +1,16 @@
+[Unit]
+Description=Japanese flick keyboard for the Steam VR keyboard (injects into the Steam client over CDP)
+# Steam runs inside gamescope-session.target, but whether that target is active depends on how the
+# session was started, so we do not bind to it. The injector just polls CDP every 2 s (with backoff)
+# and waits until Steam's SharedJSContext shows up, and re-injects after every Steam restart.
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u %h/.local/share/frame-jp-keyboard/frame_jp_keyboard_injector.py --bundle %h/.local/share/frame-jp-keyboard/bundle.js
+# The injector only exits on a crash (it retries on its own when Steam or CDP is down).
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

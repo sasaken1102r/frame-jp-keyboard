@@ -1,0 +1,5 @@
+# Files are deployed to Linux as is; keep LF even with core.autocrlf.
+* text=auto eol=lf
+
+# 12dicts source files are kept byte-for-byte as released (see THIRD_PARTY_LICENSES.md).
+data/12dicts-6.0.2/** -text

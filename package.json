@@ -1,0 +1,16 @@
+{
+  "name": "frame-jp-keyboard",
+  "version": "0.5.2",
+  "description": "Japanese flick keyboard overlay for the Steam Frame VR keyboard, injected over CDP",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test",
+    "words": "node scripts/build-words.js",
+    "package": "node scripts/package.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
