@@ -27,6 +27,11 @@ constexpr int kInstallStartTimeoutSeconds = 30;
 constexpr int kStateReadIntervalMs = 500;
 /** A detached install that hasn't written its PID within this many seconds never started. */
 constexpr long long kStartGraceSeconds = 60;
+/**
+ * A finished install counts as "installed, reopen to use it" for this long. Later its "done" is old news:
+ * the user may have installed another version by hand since (frame-update.sh drops it at the next check).
+ */
+constexpr long long kDoneFreshSeconds = 600;
 
 /**
  * Get a value from a parsed JSON object.
@@ -538,7 +543,9 @@ void UpdateChecker::recompute() {
         next.version = version;
         next.error = "interrupted";
         next.message = "the update was interrupted";
-    } else if (state == "done" && compareVersions(version, config_.currentVersion) > 0) {
+    } else if (state == "done" && compareVersions(version, config_.currentVersion) > 0 &&
+               static_cast<long long>(std::time(nullptr)) - std::atoll(get(stateFile_, "updated_at").c_str()) <=
+                   kDoneFreshSeconds) {
         next.state = UpdateState::Installed;
         next.version = version;
         next.error.clear();

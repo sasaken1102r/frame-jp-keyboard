@@ -14,7 +14,7 @@
 
 | キー | いつ | 日本語 | English |
 |---|---|---|---|
-| `updateUpToDateFormat` | `UpToDate` | 最新の版です（%s） | Up to date (%s) |
+| `updateUpToDateFormat` | `UpToDate` | 最新版です（%s） | Up to date (%s) |
 | `updateChecking` | `checking` で、まだ答えがない | 新しい版を確かめています… | Checking for updates… |
 | `updateAvailableFormat` | `Available` | 新しい版 %s があります | Version %s is available |
 | `updateButton` | `Available` で `installable` | 更新する | Update |
@@ -64,7 +64,7 @@
 | `install-failed` | install.sh が失敗しました | install.sh failed |
 | `bad-args` | 前回のインストールのオプションを読めません | The saved install options are invalid |
 | `busy` | 別の更新が動いています | Another update is running |
-| `not-newer` | もう最新の版です | Already up to date |
+| `not-newer` | もう最新版です | Already up to date |
 | `detach-failed` | 更新を始められませんでした（systemd-run） | Couldn't start the update (systemd-run) |
 | `interrupted` | 更新が途中で止まりました | The update was interrupted |
 | `io` | ファイルを書けませんでした | Couldn't write files |

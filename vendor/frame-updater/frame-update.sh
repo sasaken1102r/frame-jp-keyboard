@@ -14,6 +14,7 @@
 # stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
 #   C/update-check.json  last answer from GitHub, reused for 24 hours (errors for 1 hour)
 #   C/update-state.json  progress of the last install: running (with step) / done / failed
+#                        (a "done" older than 10 minutes is dropped at the next check or install)
 #   C/update.log         log of the last install, including install.sh's output
 #   C/update/            work folder (the copy of this script, downloads, the extracted release)
 # install needs a SHA256SUMS file attached to the release and runs the release's install.sh with
@@ -33,6 +34,8 @@ check_ttl=${FRAME_UPDATE_CHECK_TTL:-86400}
 error_ttl=${FRAME_UPDATE_ERROR_TTL:-3600}
 # A detached install that hasn't written its PID after this many seconds never started
 start_grace=60
+# A finished install is news for this long; after that its "done" no longer means "just installed"
+done_ttl=600
 nl='
 '
 cr=$(printf '\r')
@@ -254,6 +257,21 @@ EOF
     return 0
 }
 
+# True if the state file is a "done" older than done_ttl (or dated in the future).
+done_is_stale() {
+    [ "$(json_str "$state_file" state)" = done ] || return 1
+    _updated=$(json_raw "$state_file" updated_at)
+    _age=$(($(now) - ${_updated:-0}))
+    [ "$_age" -lt 0 ] || [ "$_age" -gt "$done_ttl" ]
+}
+
+# Remove a stale "done", so a later hand install of an older version isn't shown as "installed".
+clear_stale_done() {
+    if done_is_stale; then
+        rm -f "$state_file"
+    fi
+}
+
 # ---------------------------------------------------------------------------------------------
 # check
 
@@ -296,6 +314,7 @@ report_check() { # cached(true/false)
 
 cmd_check() {
     mkdir -p "$cache_dir" || usage_error "cannot create $cache_dir"
+    clear_stale_done
     _source="$(json_safe "$api_base/repos/$repo/releases/latest") $(json_safe "$asset_pattern")"
     if [ "$force" != 1 ] && [ -f "$check_file" ] && [ "$(json_str "$check_file" source)" = "$_source" ]; then
         _checked=$(json_raw "$check_file" checked_at)
@@ -386,6 +405,11 @@ on_exit() {
         log "interrupted"
         write_state failed "" "${target_version:-}" interrupted "the update was interrupted"
     fi
+    # The download and the extracted release, whether the install worked, failed or was stopped
+    # (the log and the state file stay)
+    case $ver_dir in
+        "$update_dir"/?*) rm -rf "$ver_dir" ;;
+    esac
     if [ "$(cat "$lock_dir/pid" 2>/dev/null)" = "$$" ]; then
         rm -rf "$lock_dir"
     fi
@@ -508,11 +532,17 @@ cmd_install() {
     fi
     finished=0
     target_version=
+    ver_dir=
     acquire_lock || refuse busy "another update of $app is running"
     trap on_exit EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    clear_stale_done
+    # Work folders left by an install that was killed (the running copy of this script is a file, kept)
+    for _old in "$update_dir"/*/; do
+        [ -d "$_old" ] && rm -rf "$_old"
+    done
     # A detached run keeps the log started by cmd_detach
     [ "${FRAME_UPDATE_DETACHED:-}" = 1 ] || : >"$log_file"
     log "frame-update $FRAME_UPDATE_VERSION: updating $app from $current (PID $$)"
@@ -573,7 +603,6 @@ cmd_install() {
     [ "$_rc" -eq 0 ] || fail install-failed "install.sh exited with $_rc (see $log_file)"
 
     log "updated $app to $target_version"
-    rm -rf "$ver_dir"
     write_state done "" "$target_version" "" ""
     finished=1
     cat "$state_file"
@@ -584,7 +613,7 @@ cmd_install() {
 # status
 
 cmd_status() {
-    if [ ! -f "$state_file" ]; then
+    if [ ! -f "$state_file" ] || done_is_stale; then
         echo '{"state":"idle"}'
         exit 0
     fi

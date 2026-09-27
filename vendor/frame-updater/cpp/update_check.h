@@ -39,7 +39,7 @@ enum class UpdateState {
     UpToDate,       ///< the running version is the newest release
     Available,      ///< a newer release exists (see UpdateStatus::installable)
     Installing,     ///< an install is running (see UpdateStatus::step)
-    Installed,      ///< an install finished, but this process still runs the old version
+    Installed,      ///< an install finished in the last 10 minutes, but this process still runs the old version
     CheckFailed,    ///< the last check failed (see UpdateStatus::error)
     InstallFailed,  ///< the last install failed; the current version is unchanged
 };
