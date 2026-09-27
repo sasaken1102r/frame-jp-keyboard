@@ -3,3 +3,7 @@
 
 # 12dicts source files are kept byte-for-byte as released (see THIRD_PARTY_LICENSES.md).
 data/12dicts-6.0.2/** -text
+
+# Copied verbatim from frame-updater by vendor/frame-updater's sync.sh; keep LF regardless of
+# checkout settings so its MANIFEST.sha256 (computed with CR stripped) still matches on Windows.
+vendor/frame-updater/** text eol=lf

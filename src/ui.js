@@ -90,6 +90,8 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {(index: number) => void} onCandidate - A candidate was tapped
  * @property {(index: number) => void} onSuggestion - An English suggestion was tapped
  * @property {() => void} onEnable - The re-enable button was pressed
+ * @property {() => void} onUpdateTap - The update indicator dot was tapped (forces a check)
+ * @property {(action: 'yes'|'no'|'dismiss') => void} onUpdateAction - A button in the update banner was pressed
  */
 
 /**
@@ -99,6 +101,7 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {'off'|'once'|'lock'} shift - Shift state
  * @property {ImeView} view - Composition to show in the candidate bar
  * @property {import('./english.js').Suggestion[]} [suggestions] - English suggestions (QWERTY pages)
+ * @property {import('./update.js').UpdateView} [update] - Update indicator state (see update.js)
  */
 
 /**
@@ -137,25 +140,29 @@ export const mountOverlay = (doc, handlers) => {
   const preeditEl = el(doc, 'div', 'fjk-preedit');
   const stockEl = el(doc, 'div', 'fjk-stock', 'Steam ⌨');
   stockEl.title = 'Steam の純正キーボードに切り替え';
-  topline.append(preeditEl, stockEl);
+  const updateEl = el(doc, 'div', 'fjk-update');
+  topline.append(preeditEl, updateEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
   const placeholderEl = el(doc, 'div', 'fjk-placeholder');
   leftEl.append(topline, candsEl, placeholderEl);
   const rightEl = el(doc, 'div', 'fjk-right');
   const suggestEl = el(doc, 'div', 'fjk-suggest fjk-candbar');
   const suggListEl = el(doc, 'div', 'fjk-sugg-list');
+  const suggUpdateEl = el(doc, 'div', 'fjk-update');
   const suggStockEl = el(doc, 'div', 'fjk-stock', 'Steam ⌨');
   suggStockEl.title = 'Steam の純正キーボードに切り替え';
-  suggestEl.append(suggListEl, suggStockEl);
+  suggestEl.append(suggListEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
   mainEl.append(leftEl, rightEl);
   const guide = el(doc, 'div', 'fjk-guide');
   guide.hidden = true;
+  const updateBanner = el(doc, 'div', 'fjk-update-banner');
+  updateBanner.hidden = true;
   const reenable = el(doc, 'div', 'fjk-reenable', 'あ');
   reenable.title = 'frame-jp-keyboard';
 
-  root.append(mainEl, guide);
+  root.append(mainEl, guide, updateBanner);
   shadow.append(style, root, reenable);
 
   /** @type {WeakMap<Element, KeyDef>} */
@@ -329,7 +336,8 @@ export const mountOverlay = (doc, handlers) => {
     const base = { source, id, x0: x, y0: y, dir: 'center', timer: undefined, fired: false };
     if (closest(target, '.fjk-candbar')) {
       cancelGesture();
-      const barTarget = closest(target, '.fjk-cand') ?? closest(target, '.fjk-sugg') ?? closest(target, '.fjk-stock');
+      const barTarget = closest(target, '.fjk-cand') ?? closest(target, '.fjk-sugg')
+        ?? closest(target, '.fjk-update') ?? closest(target, '.fjk-stock');
       gesture = { ...base, kind: 'bar', keyEl: null, def: null, barTarget, scroll0: candsEl.scrollTop };
       barTarget?.classList.add('fjk-pressed');
       return true;
@@ -396,6 +404,7 @@ export const mountOverlay = (doc, handlers) => {
     if (kind === 'bar') {
       if (!barTarget || Math.hypot(x - x0, y - y0) >= BAR_TAP_SLOP) return;
       if (barTarget.classList.contains('fjk-stock')) handlers.onAction('stock');
+      else if (barTarget.classList.contains('fjk-update')) handlers.onUpdateTap();
       else if (barTarget.classList.contains('fjk-sugg')) handlers.onSuggestion(Number(barTarget.dataset.index));
       else handlers.onCandidate(Number(barTarget.dataset.index));
       return;
@@ -563,6 +572,67 @@ export const mountOverlay = (doc, handlers) => {
   reenable.addEventListener('touchend', onReenable, active);
   reenable.addEventListener('pointerup', onReenable);
 
+  /**
+   * Bind a tap (touch or mouse) to a callback, the same way the re-enable button does.
+   * @param {HTMLElement} node - Element to bind
+   * @param {() => void} callback - Called once per tap
+   * @returns {void}
+   * @example
+   * bindTap(yesButton, () => handlers.onUpdateAction('yes'))
+   */
+  const bindTap = (node, callback) => {
+    const onTap = (e) => {
+      if (e.type === 'pointerup' && (/** @type {PointerEvent} */ (e).pointerType !== 'mouse' || Date.now() - lastTouchTime < MOUSE_AFTER_TOUCH_MS)) return;
+      if (e.type === 'touchend') lastTouchTime = Date.now();
+      e.preventDefault();
+      e.stopPropagation();
+      callback();
+    };
+    node.addEventListener('touchstart', preventDefault, active);
+    node.addEventListener('touchend', onTap, active);
+    node.addEventListener('pointerup', onTap);
+  };
+
+  /** Last rendered banner content, to avoid rebuilding its buttons every microtask when nothing changed. */
+  let renderedBanner = '';
+
+  /**
+   * Draw the update indicator dot(s) and the banner above them (see update.js for the state machine).
+   * @param {import('./update.js').UpdateView|undefined} view - Update state (absent = nothing to show)
+   * @returns {void}
+   * @example
+   * renderUpdate({ badge: true, banner: null })
+   */
+  const renderUpdate = (view) => {
+    const badge = !!view?.badge;
+    updateEl.classList.toggle('fjk-update-badge', badge);
+    suggUpdateEl.classList.toggle('fjk-update-badge', badge);
+    const banner = view?.banner ?? null;
+    updateBanner.hidden = !banner;
+    const key = banner ? JSON.stringify(banner) : '';
+    if (key === renderedBanner) return;
+    renderedBanner = key;
+    updateBanner.replaceChildren();
+    if (!banner) return;
+    updateBanner.append(el(doc, 'div', 'fjk-update-title', banner.title ?? ''));
+    if (banner.detail) updateBanner.append(el(doc, 'div', 'fjk-update-detail', banner.detail));
+    if (banner.kind === 'confirm' || banner.kind === 'dismissable') {
+      const actions = el(doc, 'div', 'fjk-update-actions');
+      if (banner.kind === 'confirm') {
+        const yes = el(doc, 'div', 'fjk-update-btn fjk-update-yes', banner.yes);
+        const no = el(doc, 'div', 'fjk-update-btn', banner.no);
+        bindTap(yes, () => handlers.onUpdateAction('yes'));
+        bindTap(no, () => handlers.onUpdateAction('no'));
+        actions.append(yes, no);
+      } else {
+        const close = el(doc, 'div', 'fjk-update-btn', banner.close);
+        bindTap(close, () => handlers.onUpdateAction('dismiss'));
+        actions.append(close);
+      }
+      updateBanner.append(actions);
+    }
+  };
+
   /** Last rendered suggestion strip. */
   let renderedSuggestions = '';
 
@@ -688,6 +758,7 @@ export const mountOverlay = (doc, handlers) => {
     leftEl.hidden = !split;
     suggestEl.hidden = !['qwerty', 'num', 'num2'].includes(state.page);
     renderSuggestions(state.suggestions ?? []);
+    renderUpdate(state.update);
     const composing = view.phase === 'composing' || view.phase === 'converting';
     root.classList.toggle('fjk-composing', composing);
     for (const key of buildPage(state.page).keys) {

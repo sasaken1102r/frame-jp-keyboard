@@ -51,6 +51,12 @@ cd frame-jp-keyboard
 - **☺記**: 記号のページ。
 - **純正キーボードに戻す**: あA を長押し（または「Steam ⌨」）。自作に戻すときは右上の「あ」。
 
+## 更新
+
+キーボードの隅（かなページの読みの行、または QWERTY／数字ページの候補の行）に小さな点が出る。タップすると GitHub の最新版を確かめる（1 日 1 回のキャッシュを無視して、その場で）。新しい版があれば確認が出るので、押すと注入役（サービス）が裏で入れ替える。入れ替え中はサービスが再起動するので、キーボードが一瞬消えて開き直すことがある。SHA256SUMS の無いリリースは自動で入れられないので、その場合は GitHub から手で更新してね、と出る。
+
+起動時と、その後 1 時間ごとにも自動で確かめる（実際に GitHub に聞くのは frame-update.sh 自身のキャッシュにより 1 日 1 回まで）。止めたいときは下の設定で `updateCheck` を `false` にする（点を押しての確認はこれに関わらず動く）。言語は Steam の言語設定（`~/.steam/registry.vdf`）に合わせる。
+
 ## 設定
 
 Steam の CDP コンソール（SharedJSContext）で変えられる。値は Steam の localStorage に保存される。
@@ -63,6 +69,7 @@ __fjk.settings.liveDelayMs = 150;    // 打つ手を止めてから候補を出�
 __fjk.settings.predictions = true;   // 予測（前に確定した言葉）も候補に出す（差し直し後に有効）
 __fjk.settings.suggestions = true;   // 英語の QWERTY で単語の候補を出す
 __fjk.settings.autoCapitalize = true; // 「. 」などのあとの最初の文字を自動で大文字にする
+__fjk.settings.updateCheck = true;   // 起動時と1時間ごとの自動更新確認（既定オン。点を押しての確認には関係ない）
 __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 ```
 
@@ -81,6 +88,7 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 - 開発用: CDP コンソールで `__fjk.debug.capture(true)` のあと `await __fjk.debug.type('かんじ')`、`await __fjk.debug.key('space')` などで、ヘッドセットなしに変換を試せる（確定した文字は入力先に送らず `output` にたまる）。`__fjk.debug.live()` で、いまの候補と時間（候補の計算 `lastMs`、キーの待ち時間 `keyWaits`）が見られる。英語は `await __fjk.debug.english('helo')`、`await __fjk.debug.suggestion(1)`。画面の寸法は `__fjk.debug.measure('kana')`。
 - 表示の位置がおかしいとき: 自作キーボードは純正キーボードの枠（`Layout_…`）にぴったり重ねる。その枠の位置が変なとき（ポップアップの大きさが変わったときなど）は、ポップアップ全体から下の 41 px（SteamVR の移動バーの場所）を除いた範囲に出す。
 - 候補が出るのが遅いとき: 候補は IBus を何回か呼んで作る。VR の描画中は IBus の呼び出しが 1 回 15〜40 ms かかるので、候補が出るまで 0.3〜0.5 秒ほどかかることがある（打った文字の表示は待たない）。
+- 更新がうまくいかないとき: `~/.cache/frame-jp-keyboard/update.log` に詳しい記録が残る。`~/.cache/frame-jp-keyboard/update-state.json` が更新の状態。
 
 ## 注意
 

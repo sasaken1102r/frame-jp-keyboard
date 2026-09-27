@@ -1,5 +1,15 @@
 # 変更履歴
 
+## Unreleased
+
+### 追加
+
+- **更新の確認・更新**: キーボードの隅（かなページの読みの行、QWERTY／数字ページの候補の行）に小さな点が出る。タップすると GitHub の最新版を確かめ（強制、1 日 1 回のキャッシュを無視）、新しい版があれば確認のあと注入役（Python）が `frame-update.sh install --detach` を呼んで裏で入れ替える。SHA256SUMS の無いリリースは手動更新を促す表示にする。
+- 起動時と、その後 1 時間ごと（実際に GitHub へ聞くのは frame-update.sh 自身のキャッシュにより 1 日 1 回まで）に自動で確認。設定 `__fjk.settings.updateCheck`（既定 true）で止められる。点を押す強制確認は設定に関わらず動く。
+- Steam の言語（`~/.steam/registry.vdf`。読めなければ `LC_ALL`/`LC_MESSAGES`/`LANG`）に合わせて、確認・確認ダイアログの文言を日本語／英語で出す（`src/update-strings.js`）。
+- CDP ブリッジに、ページ→注入役の呼び出し用の口（`Runtime.addBinding`）を追加。
+- `frame-updater` リポジトリの共有部品を `vendor/frame-updater/` に取り込み（`sync.sh`）。`scripts/package.js` が `MANIFEST.sha256` を確かめ、`frame-update.sh` と Python 部品をアーカイブに含め、`dist/SHA256SUMS` を書き出す。`install.sh` が `frame-update.sh` を `~/.local/share/frame-jp-keyboard/` に置き、`~/.config/frame-jp-keyboard/install-args` を書く。
+
 ## 0.5.3 — 2026-09-27
 
 ### 直したこと

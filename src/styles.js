@@ -139,6 +139,26 @@ export const OVERLAY_CSS = `
 .fjk-cell.fjk-empty { opacity: 0.35; }
 .fjk-cell.fjk-active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); transform: scale(1.08); }
 
+/* Update indicator (one in the topline, one in the suggestion strip; see ui.js's renderUpdate) and
+   its banner (checking / confirm / manual / error), floated above the current page. */
+.fjk-update {
+  flex: 0 0 14px; width: 14px; height: 14px; border-radius: 50%; align-self: center; cursor: pointer;
+  background: rgba(255, 255, 255, 0.14); border: 1px solid var(--side-edge);
+}
+.fjk-update.fjk-update-badge { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 4px var(--accent); }
+.fjk-update-banner {
+  position: absolute; left: 6px; top: 34px; z-index: 5; max-width: 300px;
+  padding: 8px 10px; border-radius: 8px; background: #202124; border: 1px solid #3a3d42;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55); font-size: 13px; line-height: 1.35; color: var(--text);
+}
+.fjk-update-detail { margin-top: 4px; color: var(--dim); font-size: 11px; }
+.fjk-update-actions { display: flex; gap: 6px; margin-top: 6px; }
+.fjk-update-btn {
+  flex: 1 1 0; text-align: center; padding: 5px 0; border-radius: 6px; font-size: 12px;
+  background: var(--key); border: 1px solid var(--key-edge); color: var(--text); cursor: pointer;
+}
+.fjk-update-btn.fjk-update-yes { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+
 .fjk-reenable {
   position: absolute; right: 2px; top: 2px; width: 44px; height: 26px; border-radius: 13px;
   display: flex; align-items: center; justify-content: center;
