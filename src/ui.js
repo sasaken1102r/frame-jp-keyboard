@@ -4,12 +4,18 @@
 // (touchstart -> touchmove ~90 Hz -> touchend, coordinates in changedTouches[0]). With the default
 // touch-action the browser pans and fires pointercancel, so everything here is touch-action:none
 // and we listen to touch events. Mouse pointer events are a fallback for desktop debugging.
+// With both controllers on the keyboard there is only one DOM touch, and a press with the laser
+// SteamVR does not focus has no movement at all; so touchstart/touchend mark press and release, and
+// the pressing laser (its press marker) gives the movement and, at release, the end point
+// (cursor-tracker.js), when the popup offers SteamClient.OpenVR.VROverlay.RegisterForCursorMovement.
 // Because default panning is off, the candidate panel is scrolled by our own drag handling.
 //
 // Layout: on the kana page the panel is split horizontally, with the composition panel on the left
 // (preedit line, then a wrapping candidate grid that scrolls vertically) and the 12-key flick pad on
 // the right, using the full height. QWERTY, numbers and symbols use the full width; the QWERTY and
 // number pages get a one-row English suggestion strip above the keys.
+import { createCursorTracker } from './cursor-tracker.js';
+import { createInputRecorder } from './input-recorder.js';
 import { getFlickDirection, DIRECTIONS } from './flick.js';
 import { createIcon, hasIcon } from './icons.js';
 import { getFlickCandidates } from './kana-table.js';
@@ -24,6 +30,13 @@ const LONG_PRESS_MS = 550;
 const MAX_SUGGESTIONS = 6;
 /** Movement (CSS px) below which a press on the candidate bar is a tap rather than a scroll. */
 const BAR_TAP_SLOP = 12;
+/** After touchend, wait this long for the pressing laser's release event (it can come just after). */
+const RELEASE_WAIT_MS = 25;
+/**
+ * The laser SteamVR does not focus reports nothing while pressed (only its release point), so its
+ * flick cannot be previewed live; the guide then shows the chosen direction this long after release.
+ */
+const RELEASE_FLASH_MS = 220;
 /** Ignore mouse presses this soon after a touch, in case the platform also emits mouse events. */
 const MOUSE_AFTER_TOUCH_MS = 600;
 
@@ -90,6 +103,8 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {(index: number) => void} onCandidate - A candidate was tapped
  * @property {(index: number) => void} onSuggestion - An English suggestion was tapped
  * @property {() => void} onEnable - The re-enable button was pressed
+ * @property {(record: object) => void} [onGesture] - A key gesture ended (numbers only; debug log)
+ * @property {(window: {press: number, entries: any[]}) => void} [onRecord] - Raw input around a press (temporary recorder)
  */
 
 /**
@@ -99,6 +114,7 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {'off'|'once'|'lock'} shift - Shift state
  * @property {ImeView} view - Composition to show in the candidate bar
  * @property {import('./english.js').Suggestion[]} [suggestions] - English suggestions (QWERTY pages)
+ * @property {{text: string, caret: number}} [english] - English word being composed (QWERTY pages)
  */
 
 /**
@@ -109,6 +125,8 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {(state: RenderState) => void} render - Show a page, labels and the candidate bar
  * @property {() => void} cancelGesture - Abort any press in progress
  * @property {() => object} measure - Rects of the overlay's parts (debug)
+ * @property {() => string} preeditText - The preedit as drawn right now (debug)
+ * @property {() => object} gestures - Recent key gestures and laser cursors (debug; numbers only)
  * @property {() => void} destroy - Remove everything from the popup
  */
 
@@ -137,16 +155,33 @@ export const mountOverlay = (doc, handlers) => {
   const preeditEl = el(doc, 'div', 'fjk-preedit');
   const stockEl = el(doc, 'div', 'fjk-stock', 'Steam ⌨');
   stockEl.title = 'Steam の純正キーボードに切り替え';
-  topline.append(preeditEl, stockEl);
+  /**
+   * Create a close-keyboard button (fires on release, like the other panel buttons).
+   * @returns {HTMLElement} The button
+   * @example
+   * makeCloseButton()
+   */
+  const makeCloseButton = () => {
+    const button = el(doc, 'div', 'fjk-close');
+    button.title = 'キーボードを閉じる';
+    button.append(createIcon(doc, 'close'));
+    return button;
+  };
+  const closeEl = makeCloseButton();
+  topline.append(closeEl, preeditEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
   const placeholderEl = el(doc, 'div', 'fjk-placeholder');
   leftEl.append(topline, candsEl, placeholderEl);
   const rightEl = el(doc, 'div', 'fjk-right');
   const suggestEl = el(doc, 'div', 'fjk-suggest fjk-candbar');
   const suggListEl = el(doc, 'div', 'fjk-sugg-list');
+  // The English word being typed (underlined); tapping it commits it as typed.
+  const compEl = el(doc, 'div', 'fjk-sugg fjk-sugg-comp');
+  compEl.dataset.index = '-1';
   const suggStockEl = el(doc, 'div', 'fjk-stock', 'Steam ⌨');
   suggStockEl.title = 'Steam の純正キーボードに切り替え';
-  suggestEl.append(suggListEl, suggStockEl);
+  const suggCloseEl = makeCloseButton();
+  suggestEl.append(compEl, suggListEl, suggCloseEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
   mainEl.append(leftEl, rightEl);
@@ -234,10 +269,69 @@ export const mountOverlay = (doc, handlers) => {
    * @property {string} dir - Current direction
    * @property {number|undefined} timer - Auto-repeat or long-press timer
    * @property {boolean} fired - Auto-repeat or long press already fired
+   * @property {number|null} [presser] - Index of the pressing laser, when known
+   * @property {{x: number, y: number}|null} [cursorBase] - The pressing laser's first report after the press
+   * @property {{x: number, y: number}|null} [cursorPoint] - Current point from the pressing laser's stream
+   * @property {string} [endSource] - Where the end point came from: release, stream or touch
+   * @property {boolean} [released] - touchend seen; waiting for the laser's release event
+   * @property {object[]} [startCursors] - All cursors at the press (gesture log)
    */
   /** @type {Gesture|null} */
   let gesture = null;
   let lastTouchTime = 0;
+  /** @type {(() => void)|null} A released press waiting for its laser's release event. */
+  let pendingFinish = null;
+
+  const popupWindow = doc.defaultView;
+  const dpr = popupWindow?.devicePixelRatio || 1;
+  // Cursor positions are expected in the popup's CSS px (like touch clientX/Y); if they turn out to
+  // be device pixels, the scale that fits the first press is learned (1, dpr or 1/dpr).
+  const tracker = createCursorTracker({ scales: dpr === 1 ? [1] : [1, dpr, 1 / dpr] });
+  /** Recent key gestures, numbers only (debug). */
+  let gestureLog = [];
+
+  /**
+   * A laser cursor moved (SteamVR reports each controller's cursor separately).
+   * @param {number} index - Cursor index
+   * @param {boolean} active - Whether it is on the popup
+   * @param {number} x - X
+   * @param {number} y - Y
+   * @returns {void}
+   * @example
+   * onCursor(1, true, 400, 120)
+   */
+  const onCursor = (index, active, x, y) => {
+    tracker.update(index, !!active, Number(x), Number(y));
+    const g = gesture;
+    // After touchend the stream is laser movement after the release: it no longer moves the press.
+    if (!active || !g || g.presser !== index || g.released) return;
+    // The first report after the press is where the laser was at touchstart.
+    g.cursorBase ??= { x: Number(x), y: Number(y) };
+    g.cursorPoint = { x: g.x0 + (Number(x) - g.cursorBase.x), y: g.y0 + (Number(y) - g.cursorBase.y) };
+    moveGesture(g.cursorPoint.x, g.cursorPoint.y);
+  };
+  // Temporary passive recorder of raw input around presses (numbers only; see input-recorder.js).
+  const recorder = handlers.onRecord ? createInputRecorder({ onWindow: handlers.onRecord }) : null;
+  const recordTypes = ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'pointerdown', 'pointermove', 'pointerup', 'pointercancel'];
+  /**
+   * Feed a DOM event to the recorder.
+   * @param {Event} e - Touch or pointer event
+   * @returns {void}
+   * @example
+   * recordEvent(event)
+   */
+  const recordEvent = (e) => (e.type.startsWith('touch') ? recorder.touch(e) : recorder.pointer(e));
+  if (recorder) for (const type of recordTypes) doc.addEventListener(type, recordEvent, { capture: true, passive: true });
+
+  let cursorHandle = null;
+  try {
+    cursorHandle = popupWindow?.SteamClient?.OpenVR?.VROverlay?.RegisterForCursorMovement?.((...args) => {
+      recorder?.cursor(...args);
+      onCursor(...args);
+    }) ?? null;
+  } catch {
+    cursorHandle = null; // Touch events alone then.
+  }
   /** @type {RenderState|null} */
   let current = null;
 
@@ -298,6 +392,25 @@ export const mountOverlay = (doc, handlers) => {
     for (const d of DIRECTIONS) cells[d].classList.toggle('fjk-active', d === dir);
   };
 
+  /** @type {ReturnType<typeof setTimeout>|undefined} Hides the guide after a release flash. */
+  let flashTimer;
+
+  /**
+   * Show the guide (still laid out for the released key) with the chosen direction, briefly.
+   * @param {string} dir - Direction that fired
+   * @returns {void}
+   * @example
+   * flashGuide('up')
+   */
+  const flashGuide = (dir) => {
+    clearTimeout(flashTimer);
+    guide.hidden = false;
+    highlightGuide(dir);
+    flashTimer = setTimeout(() => {
+      if (!gesture) guide.hidden = true;
+    }, RELEASE_FLASH_MS);
+  };
+
   /**
    * End the current gesture without firing anything.
    * @returns {void}
@@ -326,10 +439,21 @@ export const mountOverlay = (doc, handlers) => {
    * startGesture(event.target, 10, 20, 'touch', 0)
    */
   const startGesture = (target, x, y, source, id) => {
-    const base = { source, id, x0: x, y0: y, dir: 'center', timer: undefined, fired: false };
+    clearTimeout(flashTimer);
+    guide.hidden = true;
+    let presser = null;
+    let startCursors;
+    if (source === 'touch' && cursorHandle) {
+      presser = tracker.pressingIndex() ?? tracker.pick(x, y)?.index ?? null;
+      startCursors = tracker.snapshot();
+    }
+    const base = {
+      source, id, x0: x, y0: y, dir: 'center', timer: undefined, fired: false,
+      presser, cursorBase: null, cursorPoint: null, startCursors,
+    };
     if (closest(target, '.fjk-candbar')) {
       cancelGesture();
-      const barTarget = closest(target, '.fjk-cand') ?? closest(target, '.fjk-sugg') ?? closest(target, '.fjk-stock');
+      const barTarget = closest(target, '.fjk-cand') ?? closest(target, '.fjk-sugg') ?? closest(target, '.fjk-close') ?? closest(target, '.fjk-stock');
       gesture = { ...base, kind: 'bar', keyEl: null, def: null, barTarget, scroll0: candsEl.scrollTop };
       barTarget?.classList.add('fjk-pressed');
       return true;
@@ -390,12 +514,27 @@ export const mountOverlay = (doc, handlers) => {
    */
   const endGesture = (x, y) => {
     if (!gesture) return;
-    const { kind, def, x0, y0, fired, barTarget } = gesture;
+    const { kind, def, x0, y0, fired, barTarget, source, presser, endSource, startCursors } = gesture;
     const threshold = handlers.getSettings().flickThreshold;
     cancelGesture();
+    if (kind === 'key') {
+      const record = {
+        source,
+        presser: presser ?? null,
+        end: endSource ?? source,
+        start: [Math.round(x0), Math.round(y0)],
+        endPoint: [Math.round(x), Math.round(y)],
+        dir: getFlickDirection(x - x0, y - y0, threshold),
+        cursors: startCursors ?? null,
+        key: def.type, // "kana", "char" or "action": no text
+      };
+      gestureLog = [...gestureLog, record].slice(-30);
+      handlers.onGesture?.(record);
+    }
     if (kind === 'bar') {
       if (!barTarget || Math.hypot(x - x0, y - y0) >= BAR_TAP_SLOP) return;
-      if (barTarget.classList.contains('fjk-stock')) handlers.onAction('stock');
+      if (barTarget.classList.contains('fjk-close')) handlers.onAction('close');
+      else if (barTarget.classList.contains('fjk-stock')) handlers.onAction('stock');
       else if (barTarget.classList.contains('fjk-sugg')) handlers.onSuggestion(Number(barTarget.dataset.index));
       else handlers.onCandidate(Number(barTarget.dataset.index));
       return;
@@ -433,6 +572,7 @@ export const mountOverlay = (doc, handlers) => {
     e.preventDefault(); // No emulated mouse events, no scrolling.
     e.stopPropagation();
     lastTouchTime = Date.now();
+    pendingFinish?.();
     if (gesture) return; // One press at a time; a second laser is ignored.
     const touch = e.changedTouches[0];
     if (touch) startGesture(e.target, touch.clientX, touch.clientY, 'touch', touch.identifier);
@@ -446,7 +586,7 @@ export const mountOverlay = (doc, handlers) => {
    */
   const onTouchMove = (e) => {
     e.preventDefault();
-    if (gesture?.source !== 'touch') return;
+    if (gesture?.source !== 'touch' || gesture.cursorPoint) return;
     const touch = findTouch(e.changedTouches);
     if (touch) moveGesture(touch.clientX, touch.clientY);
   };
@@ -463,7 +603,34 @@ export const mountOverlay = (doc, handlers) => {
     lastTouchTime = Date.now();
     if (gesture?.source !== 'touch') return;
     const touch = findTouch(e.changedTouches);
-    if (touch) endGesture(touch.clientX, touch.clientY);
+    if (!touch) return;
+    const g = gesture;
+    const tEnd = performance.now();
+    const touchEnd = { x: touch.clientX, y: touch.clientY };
+    g.released = true;
+    /**
+     * Finish the press: the pressing laser's release point, else its streamed point, else the touch.
+     * @returns {void}
+     * @example
+     * finish()
+     */
+    const finish = () => {
+      pendingFinish = null;
+      if (gesture !== g) return;
+      const release = g.presser === null ? null : tracker.releasePoint(g.presser, tEnd);
+      g.endSource = release ? 'release' : g.cursorPoint ? 'stream' : 'touch';
+      const p = release ?? g.cursorPoint ?? touchEnd;
+      // No live movement from this laser: show what was picked once the release point is known.
+      const blind = release && !g.cursorPoint && g.kind === 'key' && (g.def?.type === 'kana' || g.def?.type === 'char');
+      endGesture(p.x, p.y);
+      if (blind) flashGuide(getFlickDirection(p.x - g.x0, p.y - g.y0, handlers.getSettings().flickThreshold));
+    };
+    if (g.presser === null) {
+      finish();
+      return;
+    }
+    pendingFinish = finish;
+    setTimeout(() => pendingFinish === finish && finish(), RELEASE_WAIT_MS);
   };
   /**
    * Abort a touch press.
@@ -563,6 +730,24 @@ export const mountOverlay = (doc, handlers) => {
   reenable.addEventListener('touchend', onReenable, active);
   reenable.addEventListener('pointerup', onReenable);
 
+  /**
+   * Draw the English word being composed: underlined, with the caret.
+   * @param {{text: string, caret: number}} english - Word and caret
+   * @returns {void}
+   * @example
+   * renderEnglish({ text: 'helo', caret: 4 })
+   */
+  const renderEnglish = (english) => {
+    const chars = Array.from(english.text);
+    compEl.hidden = chars.length === 0;
+    compEl.replaceChildren(
+      el(doc, 'span', 'fjk-pre', chars.slice(0, english.caret).join('')),
+      el(doc, 'span', 'fjk-caret'),
+      el(doc, 'span', 'fjk-pre', chars.slice(english.caret).join('')),
+    );
+    suggStockEl.hidden = chars.length > 0 || suggListEl.childElementCount > 0;
+  };
+
   /** Last rendered suggestion strip. */
   let renderedSuggestions = '';
 
@@ -633,6 +818,8 @@ export const mountOverlay = (doc, handlers) => {
    * renderCandidates(view)
    */
   const renderCandidates = (view) => {
+    // Candidates of an older reading stay visible but dimmed until fresh ones arrive.
+    candsEl.classList.toggle('fjk-stale', !!view.stale);
     const key = view.candidates.join('\u0000');
     if (key !== renderedCands) {
       renderedCands = key;
@@ -686,8 +873,10 @@ export const mountOverlay = (doc, handlers) => {
     const split = state.page === 'kana';
     root.classList.toggle('fjk-split', split);
     leftEl.hidden = !split;
-    suggestEl.hidden = !['qwerty', 'num', 'num2'].includes(state.page);
+    // The strip (with the close and Steam buttons) is on every full-width page.
+    suggestEl.hidden = !['qwerty', 'num', 'num2', 'sym1', 'sym2'].includes(state.page);
     renderSuggestions(state.suggestions ?? []);
+    renderEnglish(state.english ?? { text: '', caret: 0 });
     const composing = view.phase === 'composing' || view.phase === 'converting';
     root.classList.toggle('fjk-composing', composing);
     for (const key of buildPage(state.page).keys) {
@@ -785,6 +974,14 @@ export const mountOverlay = (doc, handlers) => {
    */
   const destroy = () => {
     cancelGesture();
+    try {
+      cursorHandle?.unregister?.();
+      cursorHandle?.Unregister?.();
+    } catch {
+      // Already gone with the popup.
+    }
+    cursorHandle = null;
+    if (recorder) for (const type of recordTypes) doc.removeEventListener(type, recordEvent, { capture: true });
     host.remove();
   };
 
@@ -828,5 +1025,21 @@ export const mountOverlay = (doc, handlers) => {
     };
   };
 
-  return { host, setEnabled, setBounds, render, cancelGesture, measure, destroy };
+  /**
+   * The preedit text as currently drawn in the panel (debug: echo latency).
+   * @returns {string} Text
+   * @example
+   * preeditText() // "かんじ"
+   */
+  const preeditText = () => preeditEl.textContent ?? '';
+
+  /**
+   * Recent key gestures and the cursor state (debug; numbers only).
+   * @returns {{registered: boolean, scale: number|null, dpr: number, cursors: object[], gestures: object[]}} Info
+   * @example
+   * gestures().gestures.at(-1).cursor
+   */
+  const gestures = () => ({ registered: !!cursorHandle, scale: tracker.scale, dpr, cursors: tracker.snapshot(), gestures: [...gestureLog] });
+
+  return { host, setEnabled, setBounds, render, cancelGesture, measure, preeditText, gestures, destroy };
 };

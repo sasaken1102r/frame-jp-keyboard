@@ -48,6 +48,11 @@ if ! python3 -c 'import aiohttp' 2>/dev/null; then
     exit 1
 fi
 
+# Kana-kanji conversion runs in the injector with libanthy (the library ibus-anthy uses too).
+if ! python3 -c 'import ctypes; ctypes.CDLL("libanthy.so.0")' 2>/dev/null; then
+    echo "warning: libanthy.so.0 not found; the keyboard will type hiragana without conversion." >&2
+fi
+
 mkdir -p "$share_dir" "$unit_dir"
 cp "$bundle" "$share_dir/bundle.js"
 cp "$injector" "$share_dir/frame_jp_keyboard_injector.py"

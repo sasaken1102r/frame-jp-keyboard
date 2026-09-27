@@ -8,13 +8,17 @@ is new (Steam restarted) or window.__fjk is missing (the context reloaded), it e
 CDP being unreachable or Steam restarting is normal: it waits with backoff and tries again.
 Console lines starting with "[fjk]" are forwarded to stdout (journald).
 
+It also serves kana-kanji conversion to the page with libanthy (see Anthy below) through a CDP
+binding named fjkAnthy, so the keyboard does not depend on IBus.
+
 Usage:
-  frame_jp_keyboard_injector.py [--bundle PATH] [--once] [--devtools URL] [--no-console]
+  frame_jp_keyboard_injector.py [--bundle PATH] [--once] [--devtools URL] [--no-console] [--anthy-selftest]
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import itertools
 import json
 import os
@@ -69,6 +73,7 @@ class CdpSession:
         self._pending: dict[int, asyncio.Future] = {}
         self._forward_console = forward_console
         self._connected_ms = time.time() * 1000
+        self._tasks: set = set()
         self._reader = asyncio.create_task(self._read())
 
     @property
@@ -89,6 +94,11 @@ class CdpSession:
                         future.set_result(data)
                 elif data.get("method") == "Runtime.consoleAPICalled" and self._forward_console:
                     self._on_console(data.get("params", {}))
+                elif data.get("method") == "Runtime.bindingCalled":
+                    # Served in its own task: the reply is a CDP call answered by this same reader.
+                    task = asyncio.create_task(serve_binding(self, data.get("params", {})))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
         finally:
             for future in self._pending.values():
                 if not future.done():
@@ -140,6 +150,258 @@ class CdpSession:
         self._reader.cancel()
 
 
+# ---------------------------------------------------------------------------------------------
+# Kana-kanji conversion with libanthy (the same library and learning data ibus-anthy uses).
+#
+# The page asks for conversions through a CDP binding (Runtime.addBinding "fjkAnthy"): it calls
+# fjkAnthy(JSON) and we answer with Runtime.evaluate("__fjkAnthyReply(JSON)"). Every request is
+# self-contained (it carries the reading and the segment lengths), so previews and the explicit
+# conversion never disturb each other. Only commit / commitPrediction write anthy's learning data
+# (~/.anthy, shared with ibus-anthy). Nothing typed is ever logged.
+# ---------------------------------------------------------------------------------------------
+
+ANTHY_UTF8_ENCODING = 2
+NTH_UNCONVERTED_CANDIDATE = -1
+MAX_CANDIDATES = 50
+MAX_PREDICTIONS = 20
+BUFFER_BYTES = 4096
+BINDING_NAME = "fjkAnthy"
+REPLY_FUNCTION = "__fjkAnthyReply"
+
+
+class _ConvStat(ctypes.Structure):
+    _fields_ = [("nr_segment", ctypes.c_int)]
+
+
+class _SegmentStat(ctypes.Structure):
+    _fields_ = [("nr_candidate", ctypes.c_int), ("seg_len", ctypes.c_int)]
+
+
+class _PredictionStat(ctypes.Structure):
+    _fields_ = [("nr_prediction", ctypes.c_int)]
+
+
+class AnthyError(Exception):
+    pass
+
+
+class Anthy:
+    """One anthy context in UTF-8 mode, driven by self-contained requests."""
+
+    def __init__(self, library: str = "libanthy.so.0") -> None:
+        lib = ctypes.CDLL(library)
+        ctx_p = ctypes.c_void_p
+        lib.anthy_init.restype = ctypes.c_int
+        lib.anthy_create_context.restype = ctx_p
+        lib.anthy_context_set_encoding.argtypes = [ctx_p, ctypes.c_int]
+        lib.anthy_set_string.argtypes = [ctx_p, ctypes.c_char_p]
+        lib.anthy_set_string.restype = ctypes.c_int
+        lib.anthy_resize_segment.argtypes = [ctx_p, ctypes.c_int, ctypes.c_int]
+        lib.anthy_get_stat.argtypes = [ctx_p, ctypes.POINTER(_ConvStat)]
+        lib.anthy_get_stat.restype = ctypes.c_int
+        lib.anthy_get_segment_stat.argtypes = [ctx_p, ctypes.c_int, ctypes.POINTER(_SegmentStat)]
+        lib.anthy_get_segment_stat.restype = ctypes.c_int
+        lib.anthy_get_segment.argtypes = [ctx_p, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        lib.anthy_get_segment.restype = ctypes.c_int
+        lib.anthy_commit_segment.argtypes = [ctx_p, ctypes.c_int, ctypes.c_int]
+        lib.anthy_commit_segment.restype = ctypes.c_int
+        lib.anthy_set_prediction_string.argtypes = [ctx_p, ctypes.c_char_p]
+        lib.anthy_set_prediction_string.restype = ctypes.c_int
+        lib.anthy_get_prediction_stat.argtypes = [ctx_p, ctypes.POINTER(_PredictionStat)]
+        lib.anthy_get_prediction_stat.restype = ctypes.c_int
+        lib.anthy_get_prediction.argtypes = [ctx_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        lib.anthy_get_prediction.restype = ctypes.c_int
+        lib.anthy_commit_prediction.argtypes = [ctx_p, ctypes.c_int]
+        lib.anthy_commit_prediction.restype = ctypes.c_int
+        if lib.anthy_init() != 0:
+            raise AnthyError("anthy_init failed")
+        ctx = lib.anthy_create_context()
+        if not ctx:
+            raise AnthyError("anthy_create_context failed")
+        lib.anthy_context_set_encoding(ctx, ANTHY_UTF8_ENCODING)
+        self._lib = lib
+        self._ctx = ctx
+        self._buffer = ctypes.create_string_buffer(BUFFER_BYTES)
+
+    def _text(self, getter, *args) -> str:
+        if getter(self._ctx, *args, self._buffer, BUFFER_BYTES) < 0:
+            return ""
+        return self._buffer.value.decode("utf-8", errors="replace")
+
+    def _segment_stat(self, index: int) -> _SegmentStat:
+        stat = _SegmentStat()
+        self._lib.anthy_get_segment_stat(self._ctx, index, ctypes.byref(stat))
+        return stat
+
+    def _nr_segments(self) -> int:
+        stat = _ConvStat()
+        self._lib.anthy_get_stat(self._ctx, ctypes.byref(stat))
+        return stat.nr_segment
+
+    def _load(self, reading: str, lengths: list | None) -> None:
+        """Convert a reading, then resize the segments (left to right) to the given lengths."""
+        if self._lib.anthy_set_string(self._ctx, reading.encode("utf-8")) != 0:
+            raise AnthyError("anthy_set_string failed")
+        if not lengths or sum(lengths) != len(reading):
+            return
+        for index, wanted in enumerate(lengths):
+            if index >= self._nr_segments():
+                break
+            have = self._segment_stat(index).seg_len
+            if have != wanted:
+                self._lib.anthy_resize_segment(self._ctx, index, wanted - have)
+
+    def _segments(self) -> list:
+        segments = []
+        for index in range(self._nr_segments()):
+            stat = self._segment_stat(index)
+            count = min(stat.nr_candidate, MAX_CANDIDATES)
+            segments.append({
+                "reading": self._text(self._lib.anthy_get_segment, index, NTH_UNCONVERTED_CANDIDATE),
+                "candidates": [self._text(self._lib.anthy_get_segment, index, n) for n in range(count)],
+            })
+        return segments
+
+    def convert(self, reading: str, lengths: list | None = None) -> list:
+        self._load(reading, lengths)
+        return self._segments()
+
+    def resize(self, reading: str, lengths: list | None, index: int, delta: int) -> list:
+        self._load(reading, lengths)
+        if 0 <= index < self._nr_segments() and delta in (-1, 1):
+            self._lib.anthy_resize_segment(self._ctx, index, delta)
+        return self._segments()
+
+    def predict(self, reading: str) -> list:
+        if self._lib.anthy_set_prediction_string(self._ctx, reading.encode("utf-8")) != 0:
+            return []
+        stat = _PredictionStat()
+        self._lib.anthy_get_prediction_stat(self._ctx, ctypes.byref(stat))
+        count = min(stat.nr_prediction, MAX_PREDICTIONS)
+        return [self._text(self._lib.anthy_get_prediction, n) for n in range(count)]
+
+    def commit(self, reading: str, lengths: list, choices: list, texts: list) -> bool:
+        """Learn a conversion. Re-creates it and checks every chosen text before committing."""
+        self._load(reading, lengths)
+        segments = self._segments()
+        if len(segments) != len(choices) or len(texts) != len(choices):
+            return False
+        for segment, choice, text in zip(segments, choices, texts):
+            if not (0 <= choice < len(segment["candidates"])) or segment["candidates"][choice] != text:
+                return False
+        for index, choice in enumerate(choices):
+            self._lib.anthy_commit_segment(self._ctx, index, choice)
+        return True
+
+    def commit_prediction(self, reading: str, index: int, text: str) -> bool:
+        """Learn a picked prediction. Checks the text before committing."""
+        predictions = self.predict(reading)
+        if not (0 <= index < len(predictions)) or predictions[index] != text:
+            return False
+        self._lib.anthy_commit_prediction(self._ctx, index)
+        return True
+
+    def handle(self, request: dict) -> dict:
+        """Serve one request from the page (the reply never echoes input on errors)."""
+        op = request.get("op")
+        reading = str(request.get("reading", ""))
+        lengths = request.get("lengths") or None
+        if op == "hello":
+            return {"ok": True, "version": 1}
+        if op == "convert":
+            return {"ok": True, "segments": self.convert(reading, lengths)}
+        if op == "resize":
+            index = int(request.get("index", 0))
+            delta = int(request.get("delta", 0))
+            return {"ok": True, "segments": self.resize(reading, lengths, index, delta)}
+        if op == "predict":
+            return {"ok": True, "predictions": self.predict(reading)}
+        if op == "commit":
+            choices = [int(c) for c in request.get("choices", [])]
+            texts = [str(t) for t in request.get("texts", [])]
+            return {"ok": self.commit(reading, lengths or [], choices, texts)}
+        if op == "commitPrediction":
+            return {"ok": self.commit_prediction(reading, int(request.get("index", -1)), str(request.get("text", "")))}
+        return {"ok": False, "error": "unknown op"}
+
+
+_anthy = None
+_anthy_failed = False
+
+
+def get_anthy():
+    """Load libanthy once; None (logged once) when it is not available."""
+    global _anthy, _anthy_failed
+    if _anthy is None and not _anthy_failed:
+        try:
+            _anthy = Anthy()
+            log.info("libanthy loaded: kana-kanji conversion is served to the page")
+        except (OSError, AnthyError) as error:
+            _anthy_failed = True
+            log.info(f"libanthy unavailable ({type(error).__name__}); the keyboard types hiragana directly")
+    return _anthy
+
+
+async def serve_binding(session, params: dict) -> None:
+    """Answer one fjkAnthy(...) call from the page."""
+    if params.get("name") != BINDING_NAME:
+        return
+    reply = {"id": None, "ok": False}
+    try:
+        request = json.loads(params.get("payload", "{}"))
+        reply["id"] = request.get("id")
+        anthy = get_anthy()
+        if anthy is None:
+            reply["error"] = "unavailable"
+        else:
+            reply.update(anthy.handle(request))
+    except Exception as error:  # a bad request must never stop the service; log the kind only
+        reply["error"] = type(error).__name__
+        log.info(f"anthy request failed: {type(error).__name__}")
+    expression = f"globalThis.{REPLY_FUNCTION} && globalThis.{REPLY_FUNCTION}({json.dumps(reply)})"
+    params_out = {"expression": expression}
+    if params.get("executionContextId") is not None:
+        params_out["contextId"] = params["executionContextId"]
+    try:
+        await session.call("Runtime.evaluate", params_out)
+    except (CdpError, asyncio.TimeoutError):
+        pass
+
+
+def anthy_selftest() -> int:
+    """Convert, resize and predict a few readings and print timings. Never commits (learning untouched)."""
+    anthy = get_anthy()
+    if anthy is None:
+        return 1
+    for reading in ["かんじ", "きかい", "きょうはいいてんき", "にほんご", "でんしゃ", "わたしはがくせいです"]:
+        start = time.perf_counter()
+        segments = anthy.convert(reading)
+        convert_ms = (time.perf_counter() - start) * 1000
+        start = time.perf_counter()
+        predictions = anthy.predict(reading)
+        predict_ms = (time.perf_counter() - start) * 1000
+        lengths = [len(s["reading"]) for s in segments]
+        start = time.perf_counter()
+        resized = anthy.resize(reading, lengths, 0, 1) if len(reading) > lengths[0] else segments
+        resize_ms = (time.perf_counter() - start) * 1000
+        start = time.perf_counter()
+        again = anthy.convert(reading, [len(s["reading"]) for s in resized])
+        reload_ms = (time.perf_counter() - start) * 1000
+        whole = "".join(s["candidates"][0] if s["candidates"] else s["reading"] for s in segments)
+        print(json.dumps({
+            "reading": reading,
+            "whole": whole,
+            "segments": [s["reading"] for s in segments],
+            "first": [s["candidates"][:3] for s in segments],
+            "predictions": predictions[:3],
+            "resized0+1": [s["reading"] for s in resized],
+            "reloadedSame": [s["reading"] for s in again] == [s["reading"] for s in resized],
+            "ms": {"convert": round(convert_ms, 2), "predict": round(predict_ms, 2),
+                   "resize": round(resize_ms, 2), "reloadWithLengths": round(reload_ms, 2)},
+        }, ensure_ascii=False))
+    return 0
+
+
 async def find_target(http: aiohttp.ClientSession, devtools: str) -> dict | None:
     async with http.get(f"{devtools}/json") as response:
         targets = await response.json(content_type=None)
@@ -179,8 +441,10 @@ async def watch_target(http: aiohttp.ClientSession, target: dict, args: argparse
     log.clear_state()
     log.info(f"connected to {TARGET_TITLE} ({target['id']})")
     try:
-        if not args.no_console:
-            await session.call("Runtime.enable")
+        await session.call("Runtime.enable")  # console forwarding and binding events
+        if get_anthy() is not None:
+            # The page calls fjkAnthy(...) for conversions; bindings live as long as this session.
+            await session.call("Runtime.addBinding", {"name": BINDING_NAME})
         while not session.closed:
             if not await session.evaluate(CHECK_EXPRESSION):
                 await inject(session, args.bundle)
@@ -239,9 +503,13 @@ def main() -> None:
     parser.add_argument("--devtools", default=DEFAULT_DEVTOOLS, help=f"CDP endpoint (default: {DEFAULT_DEVTOOLS})")
     parser.add_argument("--once", action="store_true", help="inject (or re-inject) once and exit")
     parser.add_argument("--no-console", action="store_true", help="do not forward [fjk] console lines")
+    parser.add_argument("--anthy-selftest", action="store_true",
+                        help="convert a few words with libanthy and print timings (never commits), then exit")
     args = parser.parse_args()
     args.bundle = args.bundle.expanduser()
     try:
+        if args.anthy_selftest:
+            sys.exit(anthy_selftest())
         if args.once:
             sys.exit(asyncio.run(run_once(args)))
         log.info(f"frame-jp-keyboard injector: bundle {args.bundle}, CDP {args.devtools}")

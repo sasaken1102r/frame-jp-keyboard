@@ -57,6 +57,14 @@ export const OVERLAY_CSS = `
   font-size: 13px; color: var(--dim); border: 1px solid var(--side-edge);
 }
 .fjk-stock.fjk-pressed { background: var(--pressed); color: var(--text); }
+/* Close-keyboard button: kana panel header (left end) and the English strip (left of Steam). */
+.fjk-close {
+  flex: 0 0 44px; width: 44px; height: 30px; display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; border: 1px solid var(--side-edge); color: #c7ccd3; background: var(--side);
+}
+.fjk-close .fjk-icon { width: 26px; height: 26px; }
+.fjk-close.fjk-pressed { background: var(--pressed); color: var(--text); }
+.fjk-suggest .fjk-close { align-self: center; height: 32px; }
 .fjk-cands {
   position: relative; flex: 1 1 0; min-height: 0; display: flex; flex-wrap: wrap; align-content: flex-start;
   gap: 4px; overflow: hidden;
@@ -67,6 +75,7 @@ export const OVERLAY_CSS = `
   font-size: 20px; color: var(--text); white-space: nowrap; overflow: hidden;
 }
 .fjk-cand.fjk-selected { background: #394457; border-color: var(--accent); color: #fff; }
+.fjk-cands.fjk-stale .fjk-cand { opacity: 0.4; }
 .fjk-cand.fjk-pressed { background: var(--pressed); }
 .fjk-placeholder {
   position: absolute; left: 0; right: 0; top: 34px; bottom: 0; display: flex; align-items: center;
@@ -94,6 +103,11 @@ export const OVERLAY_CSS = `
 .fjk-sugg.fjk-sugg-correction { color: #c9d7f2; }
 .fjk-sugg.fjk-pressed { background: var(--pressed); }
 .fjk-suggest .fjk-stock { align-self: center; }
+.fjk-sugg.fjk-sugg-comp {
+  flex: 0 0 auto; max-width: 45%; justify-content: flex-start; padding: 0 14px; font-size: 22px;
+  background: #202124; border-radius: 6px; box-shadow: none;
+}
+.fjk-sugg.fjk-sugg-comp + .fjk-sugg-list { border-left: 1px solid #33363b; }
 .fjk-page { flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .fjk-row { flex: 1 1 0; display: flex; gap: 3px; min-height: 0; }
 .fjk-spacer { flex: 1 1 0; }

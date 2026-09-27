@@ -101,3 +101,10 @@ AGID の単語リストのそのほかの元（Moby Words と Moby の品詞デ�
 #### UKACD の「この文書」について（注記）
 
 UKACD の許諾文にある「if The UK Advanced Cryptics Dictionary is used in a software package or redistributed in any form, ... the text of this document must be included verbatim」の「this document」が指す範囲（UKACD 配布物の README 全体か、この著作権段落のみか）は、原本（配布元のテキストファイル）を直接確認できておらず不確実。ただし AGID・SCOWL・aspell 等、UKACD を採録して配布している既知のプロジェクトはいずれもこの著作権段落のみを逐語で収録しており、本書もその慣行にならって、この段落を「this document」として逐語収録した。
+
+## 実行時に使うもの（同梱しない）
+
+以下は Steam Frame に最初から入っているものを実行時に呼び出すだけで、このプロジェクトには含めていない（再配布していない）。
+
+- **Anthy**（libanthy、かな漢字変換）: LGPL-2.1-or-later。辞書データの一部は GPL-2.0-or-later。差し込み役（Python）が実行時に `libanthy.so.0` を読み込んで使う。
+- **Python 3** と **aiohttp**（差し込み役の実行環境）: それぞれ PSF License と Apache-2.0。

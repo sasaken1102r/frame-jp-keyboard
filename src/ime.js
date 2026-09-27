@@ -1,124 +1,79 @@
-// Input method controller: decides what each key does while idle, composing kana, or converting,
-// and drives a conversion engine (ibus.js on the device, a fake in tests).
+// Input method controller: what each key does while idle, composing kana, or converting.
 //
 // States
 //   idle        nothing composed; keys go straight to the target through the direct composer
-//   composing   kana typed but not converted; our mirror (mirror.js) is the source of truth and every
-//               edit is replayed into anthy as romaji / BackSpace / Left / Right strokes
-//   converting  after 変換 (space); anthy owns the text; we show its preedit and lookup table
+//   composing   kana typed but not converted: the reading lives here (mirror.js), shown at once
+//   converting  after 変換 or a candidate tap: segments with candidates from the conversion backend
 //
-// Nothing reaches the target until the engine emits commit-text (or we fall back to direct input).
-// All public methods are queued, so fast input is applied in order even though IBus calls are async.
+// The backend (anthy-client.js: libanthy in the injector) answers self-contained requests in a few
+// milliseconds, so there are no key strokes to keep in sync and no preview to abort: live
+// candidates are simply requested for the current reading and dropped if the reading changed.
+// Nothing reaches the target until a commit, and every commit of anthy's output is reported back
+// so anthy learns it (the stock keyboard learns the same way). Without a backend, kana are typed
+// directly as hiragana.
 //
-// Live candidates (while composing): once the reading has been quiet for `liveDelayMs`, a query runs
-// in the same queue on the same input context: 変換 (space) -> read the preedit (whole sentence) and
-// the first segment's lookup table -> Escape back to the reading; then Tab (predict) -> read the
-// predictions -> Escape. Measured on the device: space ~14 ms, Escape ~4 ms, and Escape restores the
-// reading with the caret where it was. A second input context would not help: IBus has one global
-// engine that follows focus, and anthy resets the composition on focus-out. Any key pressed during a
-// query bumps a generation counter, so the query stops after its current step and the key runs
-// next. After every query we check that anthy's preedit and caret still equal our mirror, and
-// retype the mirror if not.
-import { createDebouncer, createGeneration, mergeCandidates } from './live.js';
+// Ordering: edits while composing are applied at once. Anything that has to wait for the backend
+// (変換, taps, resizing, commits right after them) runs in a queue, and edits made while such a
+// task is pending queue behind it, so a commit always sees the latest reading.
+import { createDebouncer, mergeCandidates, toKatakana } from './live.js';
 import { mirrorOf, mirrorText, applyOps, EMPTY_MIRROR } from './mirror.js';
-import { KEYSYM, SHIFT_MASK, stroke, textToStrokes } from './romaji.js';
-
-/** How long to wait for anthy's lookup table after 変換 / Escape (normally < 20 ms). */
-const LUT_TIMEOUT_MS = 300;
-/** How long to wait for a prediction table after Tab. With no prediction anthy sends no signal at all. */
-const PREDICT_WAIT_MS = 50;
-/**
- * When a key is waiting, stop waiting for predictions after this long. Prediction tables arrived
- * ~5 ms after Tab on the device; a later one is caught by the guards in handleUpdate/applyCompose.
- */
-const PREDICT_MIN_WAIT_MS = 25;
 
 /**
- * @typedef {import('./romaji.js').KeyStroke} KeyStroke
  * @typedef {import('./mirror.js').Mirror} Mirror
  * @typedef {import('./composer.js').OutputOp} OutputOp
  * @typedef {import('./live.js').LiveCandidate} LiveCandidate
+ * @typedef {import('./anthy-client.js').Segment} Segment
+ * @typedef {import('./anthy-client.js').ConversionBackend} ConversionBackend
  * @typedef {ReturnType<typeof import('./composer.js').createComposer>} Composer
  */
 
 /**
- * @typedef {object} EngineState
- * @property {string} preedit - Preedit text as shown by the engine
- * @property {number} cursor - Preedit cursor (start of the current segment while converting)
- * @property {string[]} candidates - All candidates of the lookup table
- * @property {number} candidateCursor - Selected candidate (absolute index)
- * @property {number} pageSize - Lookup table page size
- * @property {boolean} lutVisible - Lookup table is shown
- * @property {number} lutSignals - Number of update-lookup-table signals received
- * @property {number} lutApplied - Serial of the last lookup table read completely into this state
- */
-
-/**
- * @typedef {object} Engine
- * @property {EngineState} state - Latest state reported by the engine's signals
- * @property {() => Promise<void>} acquire - Make our context the active one with anthy (idempotent)
- * @property {(strokes: KeyStroke[]) => Promise<boolean[]>} press - Send key strokes in order; resolves with "handled" per stroke
- * @property {(predicate: (s: EngineState) => boolean, timeoutMs: number) => Promise<boolean>} waitFor - Wait for a state condition (false on timeout)
- * @property {() => Promise<void>} settle - Wait until the engine's signals have been delivered
- * @property {() => Promise<void>} reset - Discard the engine's composition without committing
- * @property {() => Promise<void>} release - Reset, give focus back, restore the global engine
- */
-
-/**
  * @typedef {object} ImeView
- * @property {'direct'|'idle'|'composing'|'converting'} phase - Current phase ("direct" = no conversion engine)
- * @property {string} preedit - Text being composed
- * @property {number} caret - Caret inside the preedit while composing
+ * @property {'direct'|'idle'|'composing'|'converting'} phase - Current phase ("direct" = no conversion backend)
+ * @property {string} preedit - Text being composed (or the conversion)
+ * @property {number} caret - Caret inside the reading while composing
  * @property {number} segStart - Start of the current segment while converting
- * @property {number} segLength - Length of the current segment while converting (0 = unknown)
+ * @property {number} segLength - Length of the current segment while converting
  * @property {string[]} candidates - Candidates to show
  * @property {number} selected - Selected candidate index (-1 = none)
- * @property {'live'|'lookup'|'none'} source - Live candidates while composing, anthy's lookup table while converting
+ * @property {'live'|'lookup'|'none'} source - Live candidates while composing, the segment's candidates while converting
+ * @property {boolean} [stale] - The live candidates belong to an older reading (shown dimmed)
  */
+
+/**
+ * @typedef {{reading: string, candidates: string[], sel: number}} ConvSegment
+ * @typedef {{reading: string, segments: ConvSegment[], cur: number}} Conversion
+ */
+
+/**
+ * Length of a string in characters (code points).
+ * @param {string} s - String
+ * @returns {number} Length
+ * @example
+ * len('漢字') // 2
+ */
+const len = (s) => Array.from(s).length;
 
 /**
  * Create the input method controller.
  * @param {object} options - Options
- * @param {Engine|null} options.engine - Conversion engine, or null for direct hiragana input
+ * @param {ConversionBackend|null} options.engine - Conversion backend, or null for direct hiragana input
  * @param {Composer} options.direct - Composer that types straight into the target
  * @param {Composer} options.compose - Composer for the kana being composed
  * @param {(ops: OutputOp[]) => void} options.send - Delivers operations to the target
  * @param {() => void} [options.onChange] - Called when the view may have changed
  * @param {(...args: unknown[]) => void} [options.warn] - Warning logger
- * @param {number} [options.liveDelayMs=150] - Quiet time before live candidates are computed
- * @param {boolean} [options.predictions=true] - Ask anthy for (history-based) predictions too
+ * @param {number} [options.liveDelayMs=120] - Quiet time before live candidates are requested
+ * @param {boolean} [options.predictions=true] - Also ask for predictions (learned history)
  * @param {(fn: () => void, ms: number) => unknown} [options.setTimer] - Timer (injectable for tests)
  * @param {(id: unknown) => void} [options.clearTimer] - Timer cancel (injectable for tests)
- * @param {() => number} [options.now] - Clock in ms (for latency statistics)
- * @returns {{
- *   kana: (keyId: string, direction: string) => Promise<void>,
- *   kanaText: (text: string) => Promise<void>,
- *   text: (text: string|(() => string)) => Promise<void>,
- *   modify: () => Promise<void>,
- *   backspace: () => Promise<void>,
- *   undo: () => Promise<void>,
- *   arrow: (direction: 'left'|'right') => Promise<void>,
- *   space: () => Promise<void>,
- *   enter: () => Promise<void>,
- *   select: (index: number, text?: string) => Promise<void>,
- *   replaceTail: (count: () => number, text: string) => Promise<void>,
- *   commitAll: () => Promise<void>,
- *   discard: () => Promise<void>,
- *   release: () => Promise<void>,
- *   disableEngine: (reason: string) => void,
- *   attachEngine: (engine: Engine) => void,
- *   handleCommit: (text: string) => void,
- *   handleUpdate: () => void,
- *   view: () => ImeView,
- *   flush: () => Promise<void>,
- *   liveInfo: () => object,
- *   readonly busy: boolean,
- * }} The controller
+ * @param {() => number} [options.now] - Clock in ms (statistics)
+ * @returns {object} The controller (see the returned object)
  * @example
- * const ime = createIme({ engine, direct, compose, send });
- * await ime.kana('ka', 'center'); // composing "か"
+ * const ime = createIme({ engine: anthy, direct, compose, send });
+ * ime.kana('ka', 'center'); // composing "か"
  * await ime.space(); // converting
- * await ime.enter(); // commits through send()
+ * await ime.enter(); // commits and teaches anthy
  */
 export const createIme = ({
   engine,
@@ -127,95 +82,73 @@ export const createIme = ({
   send,
   onChange = () => {},
   warn = () => {},
-  liveDelayMs = 150,
+  liveDelayMs = 120,
   predictions = true,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   now = () => performance.now(),
 }) => {
+  /** @type {ConversionBackend|null} */
   let active = engine;
-  /** @type {Mirror} */
+  /** @type {Mirror} The reading being composed. */
   let mirror = EMPTY_MIRROR;
-  let converting = false;
-  let pending = 0;
+  /** @type {Conversion|null} */
+  let conv = null;
+  /** @type {{reading: string, items: LiveCandidate[], segments: Segment[]}} */
+  let live = { reading: '', items: [], segments: [] };
   /** @type {Promise<void>} */
   let queue = Promise.resolve();
-  /** Bumped synchronously by every user action; live queries stop when it moves. */
-  const generation = createGeneration();
+  let slowPending = 0;
+  /** @type {Promise<void>} The live request in flight (for flush). */
+  let liveTask = Promise.resolve();
   const debouncer = createDebouncer({ delayMs: liveDelayMs, setTimer, clearTimer });
-  /** @type {{reading: string, items: LiveCandidate[]}} */
-  let live = { reading: '', items: [] };
-  let querying = false;
-  let resyncQueued = false;
-  const stats = { queries: 0, aborted: 0, resyncs: 0, lastMs: 0, lastPredictMs: 0, maxKeyWaitMs: 0, keyWaits: [] };
+  const stats = { queries: 0, stale: 0, failures: 0, lastMs: 0, commits: 0, learned: 0 };
 
   /**
-   * Whether anything is being composed or converted.
-   * @returns {boolean} True while the engine holds text
-   * @example
-   * isComposing()
-   */
-  const isComposing = () => converting || mirror.chars.length > 0;
-
-  /**
-   * Forget the composition state (the engine must already be empty).
+   * Forget the composition and the conversion.
    * @returns {void}
    * @example
-   * clearComposition()
+   * clear()
    */
-  const clearComposition = () => {
+  const clear = () => {
     mirror = EMPTY_MIRROR;
-    converting = false;
+    conv = null;
     compose.reset();
-    live = { reading: '', items: [] };
+    live = { reading: '', items: [], segments: [] };
     debouncer.cancel();
   };
 
   /**
-   * Stop using the engine for the rest of this session and type directly instead.
-   * Whatever was being composed is typed into the target as shown, so nothing is lost.
+   * Stop using the backend and type directly (whatever is composed is typed as shown).
    * @param {string} reason - Why (logged)
    * @returns {void}
    * @example
-   * disableEngine('IBus call failed')
+   * disableEngine('backend gone')
    */
   const disableEngine = (reason) => {
     if (!active) return;
-    const shown = converting ? active.state.preedit : mirrorText(mirror);
-    const failed = active;
+    const shown = conv ? convText(conv) : mirrorText(mirror);
     active = null;
     warn(`conversion disabled, typing hiragana directly: ${reason}`);
-    clearComposition();
+    clear();
     if (shown) send(direct.typeText(shown));
-    failed.reset().catch(() => {});
     onChange();
   };
 
   /**
-   * Run a task after the previous ones. A failing engine call switches to direct input.
-   * User tasks bump the generation right away, so a running live query yields to them.
+   * Run a task after the queued ones; edits wait behind it.
    * @param {() => Promise<void>|void} task - Task
-   * @param {boolean} [user=true] - A user action (false for background live queries)
-   * @returns {Promise<void>} Resolves when the task is done
+   * @returns {Promise<void>} Resolves when done
    * @example
-   * enqueue(async () => {})
+   * slow(async () => {})
    */
-  const enqueue = (task, user = true) => {
-    pending += 1;
-    const calledAt = now();
-    if (user) generation.bump();
-    const run = queue.then(() => {
-      if (user) {
-        const wait = now() - calledAt;
-        stats.maxKeyWaitMs = Math.max(stats.maxKeyWaitMs, wait);
-        stats.keyWaits = [...stats.keyWaits, Math.round(wait * 10) / 10].slice(-50);
-      }
-      return task();
-    }).catch((error) => {
-      disableEngine(`${error?.message ?? error}`);
+  const slow = (task) => {
+    slowPending += 1;
+    const run = queue.then(task).catch((error) => {
+      stats.failures += 1;
+      warn(`conversion request failed: ${`${error?.message ?? error}`.split('\n')[0]}`);
     }).finally(() => {
-      pending -= 1;
-      if (user) scheduleLive();
+      slowPending -= 1;
       onChange();
     });
     queue = run;
@@ -223,215 +156,269 @@ export const createIme = ({
   };
 
   /**
-   * Start using an engine that finished initializing after the controller was created.
-   * @param {Engine} value - The engine
+   * Whether an edit can be applied right away (nothing queued that changes the composition).
+   * @returns {boolean} True when edits apply at once
+   * @example
+   * canEditNow()
+   */
+  const canEditNow = () => slowPending === 0;
+
+  /**
+   * The text of a conversion (every segment's selected candidate).
+   * @param {Conversion} c - Conversion
+   * @returns {string} Text
+   * @example
+   * convText(conv)
+   */
+  const convText = (c) => c.segments.map((s) => s.candidates[s.sel] ?? s.reading).join('');
+
+  /**
+   * Build a conversion from backend segments.
+   * @param {string} reading - Reading
+   * @param {Segment[]} segments - Segments
+   * @returns {Conversion} Conversion (every segment on its first candidate, first segment current)
+   * @example
+   * toConversion('かんじ', [{ reading: 'かんじ', candidates: ['漢字'] }])
+   */
+  const toConversion = (reading, segments) => ({
+    reading,
+    segments: segments.map((s) => ({ reading: s.reading, candidates: s.candidates.length ? s.candidates : [s.reading], sel: 0 })),
+    cur: 0,
+  });
+
+  /**
+   * Apply composer ops to the reading (shown at once) and ask for fresh live candidates.
+   * @param {OutputOp[]} ops - Ops from the compose composer
    * @returns {void}
    * @example
-   * attachEngine(engine)
+   * applyEdit(compose.input('ka', 'center'))
    */
-  const attachEngine = (value) => {
-    enqueue(() => {
-      if (active || !value) return;
-      active = value;
-      clearComposition();
-    });
+  const applyEdit = (ops) => {
+    if (!ops.length) return;
+    mirror = applyOps(mirror, ops).mirror;
+    if (!mirror.chars.length) live = { reading: '', items: [], segments: [] };
+    scheduleLive();
+    onChange();
   };
 
   /**
-   * Check that anthy's preedit and caret equal our mirror.
-   * @returns {boolean} True when in sync
-   * @example
-   * inSync()
-   */
-  const inSync = () => active.state.preedit === mirrorText(mirror) && active.state.cursor === mirror.caret;
-
-  /**
-   * Put the mirror back into anthy from scratch (reset, retype, move the caret).
-   * @returns {Promise<void>} Resolves when retyped
-   * @example
-   * await resync()
-   */
-  const resync = async () => {
-    stats.resyncs += 1;
-    warn('anthy was out of sync with the composition; retyping it');
-    await active.reset();
-    const { strokes } = textToStrokes(mirrorText(mirror));
-    const lefts = Array.from({ length: mirror.chars.length - mirror.caret }, () => stroke(KEYSYM.Left));
-    await active.press([...strokes, ...lefts]);
-    await active.settle();
-  };
-
-  /**
-   * Press one key and wait for the lookup table it causes. Every keystroke also produces an
-   * (invisible) table update that can arrive late, so we wait for the expected visibility:
-   * 変換 and Tab open a visible table, Escape hides it.
-   * @param {KeyStroke} key - Key stroke
-   * @param {boolean} visible - Expected visibility of the table
-   * @param {number} timeoutMs - How long to wait for the table's signal
-   * @param {(elapsed: number, signalled: boolean) => boolean} [giveUp] - Checked every few ms; true stops waiting early
-   * @returns {Promise<{handled: boolean, updated: boolean}>} Whether the key was handled and the table arrived
-   * @example
-   * await pressForTable(stroke(KEYSYM.space), true, LUT_TIMEOUT_MS)
-   */
-  const pressForTable = async (key, visible, timeoutMs, giveUp = () => false) => {
-    const before = active.state.lutSignals;
-    const t0 = now();
-    const [handled] = await active.press([key]);
-    if (!handled) return { handled, updated: false };
-    const start = now();
-    stats.lastSteps = [...(stats.lastSteps ?? []).slice(-5), { key: key.keyval.toString(16), pressMs: Math.round(start - t0) }];
-    /**
-     * The expected table has been read completely.
-     * @param {EngineState} st - Engine state
-     * @returns {boolean} True when it arrived
-     * @example
-     * arrived(active.state)
-     */
-    const arrived = (st) => st.lutApplied > before && st.lutVisible === visible;
-    while (!arrived(active.state)) {
-      const elapsed = now() - start;
-      if (elapsed >= timeoutMs || giveUp(elapsed, active.state.lutSignals > before)) break;
-      await active.waitFor(arrived, 5);
-    }
-    stats.lastSteps.at(-1).waitMs = Math.round(now() - start);
-    return { handled, updated: arrived(active.state) };
-  };
-
-  /**
-   * Leave a peek (conversion or prediction) with Escape and check that the reading is intact.
-   * @returns {Promise<boolean>} True when anthy is back on our reading
-   * @example
-   * await backToReading()
-   */
-  const backToReading = async () => {
-    await pressForTable(stroke(KEYSYM.Escape), false, LUT_TIMEOUT_MS);
-    return inSync();
-  };
-
-  /**
-   * Compute live candidates for the current reading (runs inside the queue).
-   * @param {number} gen - Generation when the query was scheduled
-   * @returns {Promise<void>} Resolves when done or abandoned
-   * @example
-   * await liveQuery(generation.current)
-   */
-  const liveQuery = async (gen) => {
-    if (!active || converting || !mirror.chars.length) return;
-    const reading = mirrorText(mirror);
-    if (reading === live.reading) return;
-    if (!generation.isCurrent(gen)) {
-      stats.aborted += 1;
-      return;
-    }
-    querying = true;
-    try {
-      const t0 = now();
-      // Giving up on 変換 is always safe: anthy is converting either way, and Escape brings it back.
-      const conv = await pressForTable(stroke(KEYSYM.space), true, LUT_TIMEOUT_MS, () => !generation.isCurrent(gen));
-      const whole = conv.updated ? active.state.preedit : '';
-      const segment = conv.updated ? [...active.state.candidates] : [];
-      if (conv.handled && !await backToReading()) {
-        await resync();
-        return;
-      }
-      if (!conv.updated && !generation.isCurrent(gen)) {
-        stats.aborted += 1;
-        return;
-      }
-      stats.queries += 1;
-      stats.lastMs = now() - t0;
-      live = { reading, items: mergeCandidates({ reading, whole, segment }) };
-      onChange();
-      if (!predictions) return;
-      if (!generation.isCurrent(gen)) {
-        stats.aborted += 1;
-        return;
-      }
-      const t1 = now();
-      // Giving up on Tab is only safe while no signal came (anthy stays in input mode then).
-      const pred = await pressForTable(stroke(KEYSYM.Tab), true, PREDICT_WAIT_MS, (elapsed, signalled) => !signalled && !generation.isCurrent(gen) && elapsed >= PREDICT_MIN_WAIT_MS);
-      const predicted = pred.updated ? [...active.state.candidates] : [];
-      if (pred.updated ? !await backToReading() : !inSync()) {
-        await resync();
-        return;
-      }
-      stats.lastPredictMs = now() - t1;
-      if (predicted.length) {
-        live = { reading, items: mergeCandidates({ reading, whole, segment, predictions: predicted }) };
-        onChange();
-      }
-    } finally {
-      querying = false;
-    }
-  };
-
-  /**
-   * After a user action: (re)start the debounce for live candidates, or stop it when not composing.
+   * Request live candidates once typing pauses.
    * @returns {void}
    * @example
    * scheduleLive()
    */
   const scheduleLive = () => {
-    if (!active || converting || !mirror.chars.length) {
+    if (!active || conv || !mirror.chars.length) {
       debouncer.cancel();
       return;
     }
     if (mirrorText(mirror) === live.reading) return;
     debouncer.schedule(() => {
-      const gen = generation.current;
-      enqueue(() => liveQuery(gen), false);
+      liveTask = queryLive(mirrorText(mirror));
     });
   };
 
   /**
-   * Apply composer ops to the composition and replay them into the engine.
-   * @param {OutputOp[]} ops - Ops from the compose composer
-   * @returns {Promise<void>} Resolves when the engine has the strokes
+   * Fetch the conversion and predictions for a reading and show them if it is still current.
+   * @param {string} reading - Reading
+   * @returns {Promise<boolean>} True when the candidates were published
    * @example
-   * await applyCompose(compose.input('ka', 'center'))
+   * await queryLive('かんじ')
    */
-  const applyCompose = async (ops) => {
-    if (!ops.length) return;
-    if (mirror.chars.length === 0) await active.acquire();
-    // A late prediction/conversion table means anthy is not in plain input: leave it before typing,
-    // so our strokes can never select (and commit) something the user did not pick.
-    else if (!converting && active.state.lutVisible && !await backToReading()) await resync();
-    const result = applyOps(mirror, ops);
-    mirror = result.mirror;
-    if (result.skipped.length) warn(`cannot type through anthy, skipped ${result.skipped.length} character(s)`);
-    if (!mirror.chars.length) live = { reading: '', items: [] };
+  const queryLive = async (reading) => {
+    if (!active || !reading) return false;
+    const t0 = now();
+    try {
+      const [segments, predicted] = await Promise.all([
+        active.convert(reading),
+        predictions ? active.predict(reading).catch(() => []) : Promise.resolve([]),
+      ]);
+      stats.lastMs = now() - t0;
+      stats.queries += 1;
+      if (conv || reading !== mirrorText(mirror)) {
+        stats.stale += 1;
+        return false;
+      }
+      const whole = segments.map((s) => s.candidates[0] ?? s.reading).join('');
+      live = {
+        reading,
+        segments,
+        items: mergeCandidates({ reading, whole, segment: segments[0]?.candidates ?? [], predictions: predicted }),
+      };
+      onChange();
+      return true;
+    } catch (error) {
+      stats.failures += 1;
+      warn(`live candidates failed: ${`${error?.message ?? error}`.split('\n')[0]}`);
+      return false;
+    }
+  };
+
+  /**
+   * Send a committed conversion and let anthy learn it (in the background).
+   * @returns {void}
+   * @example
+   * commitConversion()
+   */
+  const commitConversion = () => {
+    if (!conv) return;
+    const c = conv;
+    const text = convText(c);
+    clear();
+    send(direct.typeText(text));
+    stats.commits += 1;
+    active?.commit({
+      reading: c.reading,
+      lengths: c.segments.map((s) => len(s.reading)),
+      choices: c.segments.map((s) => s.sel),
+      texts: c.segments.map((s) => s.candidates[s.sel] ?? s.reading),
+    }).then((ok) => {
+      if (ok) stats.learned += 1;
+    }).catch((error) => warn(`anthy did not learn the commit: ${`${error?.message ?? error}`.split('\n')[0]}`));
     onChange();
-    await active.press(result.strokes);
   };
 
   /**
-   * Commit everything the engine holds (Enter), and wait for commit-text to be delivered.
-   * @returns {Promise<void>} Resolves when committed
+   * Commit whatever is composed or converted (the reading is committed as typed).
+   * @returns {void}
    * @example
-   * await commitInEngine()
+   * commitAny()
    */
-  const commitInEngine = async () => {
-    if (!isComposing()) return;
-    await active.press([stroke(KEYSYM.Return)]);
-    await active.settle();
-    clearComposition();
+  const commitAny = () => {
+    if (conv) {
+      commitConversion();
+      return;
+    }
+    if (mirror.chars.length) {
+      const text = mirrorText(mirror);
+      clear();
+      send(direct.typeText(text));
+      onChange();
+    }
   };
 
   /**
-   * Leave conversion and go back to editing the reading (anthy's cancel = Escape).
-   * @returns {Promise<void>} Resolves when the reading has been loaded into the mirror
+   * Leave the conversion and go back to editing its reading.
+   * @returns {void}
    * @example
-   * await cancelConversion()
+   * cancelConversion()
    */
-  const cancelConversion = async () => {
-    await active.press([stroke(KEYSYM.Escape)]);
-    await active.settle();
-    converting = false;
-    const reading = active.state.preedit;
+  const cancelConversion = () => {
+    if (!conv) return;
+    const { reading } = conv;
+    conv = null;
     mirror = mirrorOf(reading);
     compose.load(reading);
-    if (!reading) clearComposition();
+    scheduleLive();
+    onChange();
   };
+
+  /**
+   * Start converting the reading (uses the live result when it is for the same reading).
+   * @returns {Promise<void>} Resolves when converting
+   * @example
+   * await startConversion()
+   */
+  const startConversion = async () => {
+    const reading = mirrorText(mirror);
+    const segments = live.reading === reading && live.segments.length ? live.segments : await active.convert(reading);
+    if (reading !== mirrorText(mirror)) return;
+    debouncer.cancel();
+    conv = toConversion(reading, segments);
+  };
+
+  /**
+   * Take a candidate of the current segment: the last segment commits everything (anthy learns
+   * every segment), any other segment moves on to the next one.
+   * @param {number} index - Candidate index in the current segment
+   * @param {string} [text] - The candidate as shown (a changed table is matched by text)
+   * @returns {void}
+   * @example
+   * pickInConversion(2, '器械')
+   */
+  const pickInConversion = (index, text) => {
+    if (!conv) return;
+    const seg = conv.segments[conv.cur];
+    const at = text === undefined || seg.candidates[index] === text ? index : seg.candidates.indexOf(text);
+    if (!(at >= 0 && at < seg.candidates.length)) return;
+    seg.sel = at;
+    if (conv.cur >= conv.segments.length - 1) {
+      commitConversion();
+      return;
+    }
+    conv.cur += 1;
+    onChange();
+  };
+
+  /**
+   * Commit a live candidate (shown before 変換).
+   * @param {number} index - Index in the live list
+   * @param {string} [text] - The candidate as shown
+   * @returns {Promise<void>} Resolves when applied
+   * @example
+   * await pickLive(0)
+   */
+  const pickLive = async (index, text) => {
+    const reading = mirrorText(mirror);
+    let item = live.items[index];
+    if (!item || (text !== undefined && item.text !== text) || live.reading !== reading) {
+      // The list on screen was for an older reading: refresh and look the same text up again.
+      const wanted = text ?? item?.text;
+      if (live.reading !== reading) await queryLive(reading);
+      item = live.items.find((c) => c.text === wanted);
+      if (!item || live.reading !== reading) return;
+    }
+    switch (item.kind) {
+      case 'whole':
+        conv = toConversion(reading, live.segments);
+        commitConversion();
+        return;
+      case 'segment':
+        conv = toConversion(reading, live.segments);
+        pickInConversion(item.index, item.text);
+        return;
+      case 'prediction': {
+        clear();
+        send(direct.typeText(item.text));
+        stats.commits += 1;
+        active?.commitPrediction({ reading, index: item.index, text: item.text })
+          .then((ok) => {
+            if (ok) stats.learned += 1;
+          })
+          .catch((error) => warn(`anthy did not learn the prediction: ${`${error?.message ?? error}`.split('\n')[0]}`));
+        onChange();
+        return;
+      }
+      default:
+        // Hiragana or katakana: nothing to learn.
+        clear();
+        send(direct.typeText(item.kind === 'katakana' ? toKatakana(reading) : reading));
+        onChange();
+    }
+  };
+
+  /**
+   * Resize the current segment by one character (anthy re-segments the rest).
+   * @param {number} delta - -1 or +1
+   * @returns {Promise<void>} Resolves when resized
+   * @example
+   * await resizeCurrent(1)
+   */
+  const resizeCurrent = async (delta) => {
+    const c = conv;
+    const lengths = c.segments.map((s) => len(s.reading));
+    const segments = await active.resize(c.reading, lengths, c.cur, delta);
+    if (conv !== c) return;
+    const next = toConversion(c.reading, segments);
+    // Keep the choices of the segments before the current one.
+    for (let i = 0; i < c.cur && i < next.segments.length; i += 1) {
+      if (next.segments[i].reading === c.segments[i].reading) next.segments[i].sel = c.segments[i].sel;
+    }
+    next.cur = Math.min(c.cur, next.segments.length - 1);
+    conv = next;
+  };
+
+  // ---- Public actions -------------------------------------------------------------------------
 
   /**
    * Type a kana key (tap or flick).
@@ -439,394 +426,262 @@ export const createIme = ({
    * @param {string} direction - Flick direction
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await kana('a', 'left') // い
+   * kana('a', 'left') // い
    */
-  const kana = (keyId, direction) => enqueue(async () => {
-    if (!active) {
-      send(direct.input(keyId, direction));
-      return;
+  const kana = (keyId, direction) => {
+    if (active && !conv && canEditNow()) {
+      applyEdit(compose.input(keyId, direction));
+      return Promise.resolve();
     }
-    if (converting) await commitInEngine();
-    await applyCompose(compose.input(keyId, direction));
-  });
+    return slow(() => {
+      if (!active) {
+        send(direct.input(keyId, direction));
+        return;
+      }
+      commitAny();
+      applyEdit(compose.input(keyId, direction));
+    });
+  };
 
   /**
-   * Add kana text to the composition (debug API and tests; same path as a key).
+   * Add kana text to the reading (debug API and tests; same path as a key).
    * @param {string} value - Kana text
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await kanaText('かんじ')
+   * kanaText('かんじ')
    */
-  const kanaText = (value) => enqueue(async () => {
-    if (!active) {
-      send(direct.typeText(value));
-      return;
+  const kanaText = (value) => {
+    if (active && !conv && canEditNow()) {
+      applyEdit(compose.typeText(value));
+      return Promise.resolve();
     }
-    if (converting) await commitInEngine();
-    await applyCompose(compose.typeText(value));
-  });
+    return slow(() => {
+      if (!active) {
+        send(direct.typeText(value));
+        return;
+      }
+      commitAny();
+      applyEdit(compose.typeText(value));
+    });
+  };
 
   /**
-   * Type literal text (QWERTY letters, symbols). Commits any composition first.
-   * @param {string|(() => string)} value - Text, or a function called when the task runs (so it can
-   *   depend on what has been sent before, e.g. auto-capitalization after ". ")
+   * Type literal text (QWERTY, symbols). Commits any composition first.
+   * @param {string|(() => string)} value - Text, or a function called when it is sent
    * @returns {Promise<void>} Resolves when sent
    * @example
-   * await text('「')
+   * text('「')
    */
-  const text = (value) => enqueue(async () => {
-    if (active) await commitInEngine();
+  const text = (value) => slow(() => {
+    commitAny();
     send(direct.typeText(typeof value === 'function' ? value() : value));
   });
 
   /**
-   * The ゛゜小 key: change the character before the caret. While converting, the conversion is
-   * cancelled first so the key works on the reading.
+   * ゛゜小: change the character before the caret (a conversion goes back to its reading first).
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await modify()
+   * modify()
    */
-  const modify = () => enqueue(async () => {
-    if (!active || !isComposing()) {
-      send(direct.modify());
-      return;
+  const modify = () => {
+    if (active && !conv && canEditNow() && mirror.chars.length) {
+      applyEdit(compose.modify());
+      return Promise.resolve();
     }
-    if (converting) await cancelConversion();
-    await applyCompose(compose.modify());
-  });
+    return slow(() => {
+      if (!active || (!conv && !mirror.chars.length)) {
+        send(direct.modify());
+        return;
+      }
+      cancelConversion();
+      applyEdit(compose.modify());
+    });
+  };
 
   /**
-   * ⌫: delete in the composition, cancel a conversion, or delete in the target when idle.
+   * ⌫: delete in the reading, leave a conversion, or delete in the target when idle.
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await backspace()
+   * backspace()
    */
-  const backspace = () => enqueue(async () => {
-    if (!active || !isComposing()) {
+  const backspace = () => {
+    if (active && !conv && canEditNow() && mirror.chars.length) {
+      applyEdit(compose.backspace());
+      return Promise.resolve();
+    }
+    return slow(() => {
+      if (conv) {
+        cancelConversion();
+        return;
+      }
+      if (active && mirror.chars.length) {
+        applyEdit(compose.backspace());
+        return;
+      }
       send(direct.backspace());
-      return;
-    }
-    if (converting) {
-      await cancelConversion();
-      return;
-    }
-    await applyCompose(compose.backspace());
-  });
+    });
+  };
 
   /**
-   * ↶: undo the last kana edit (a conversion is cancelled back to its reading first); when idle,
-   * undo the last thing typed into the target.
+   * ↶: undo the last kana edit, leave a conversion, or undo in the target when idle.
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await undo()
+   * undo()
    */
-  const undo = () => enqueue(async () => {
-    if (!active) {
+  const undo = () => {
+    if (active && !conv && canEditNow() && mirror.chars.length) {
+      applyEdit(compose.undo());
+      return Promise.resolve();
+    }
+    return slow(() => {
+      if (conv) {
+        cancelConversion();
+        return;
+      }
+      if (active && mirror.chars.length) {
+        applyEdit(compose.undo());
+        return;
+      }
       send(direct.undo());
-      return;
-    }
-    if (converting) {
-      await cancelConversion();
-      return;
-    }
-    const ops = compose.undo();
-    if (ops.length) {
-      await applyCompose(ops);
-      return;
-    }
-    if (!isComposing()) send(direct.undo());
-  });
+    });
+  };
 
   /**
-   * ← / →: move the caret in the composition, resize the current segment while converting
-   * (Shift+Left / Shift+Right in anthy), or move the target's cursor when idle.
+   * ← / →: move the caret in the reading, resize the current segment while converting, or move
+   * the target's cursor when idle.
    * @param {'left'|'right'} directionName - Direction
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await arrow('left')
+   * arrow('left')
    */
-  const arrow = (directionName) => enqueue(async () => {
-    if (!active || !isComposing()) {
+  const arrow = (directionName) => {
+    const key = { key: directionName === 'left' ? 'ArrowLeft' : 'ArrowRight' };
+    if (active && !conv && canEditNow() && mirror.chars.length) {
+      applyEdit([key]);
+      compose.load(mirror.chars.slice(0, mirror.caret).join(''));
+      return Promise.resolve();
+    }
+    return slow(async () => {
+      if (conv) {
+        await resizeCurrent(directionName === 'left' ? -1 : 1);
+        return;
+      }
+      if (active && mirror.chars.length) {
+        applyEdit([key]);
+        compose.load(mirror.chars.slice(0, mirror.caret).join(''));
+        return;
+      }
       send(direct.arrow(directionName));
-      return;
-    }
-    if (converting) {
-      await active.press([stroke(directionName === 'left' ? KEYSYM.Left : KEYSYM.Right, SHIFT_MASK)]);
-      return;
-    }
-    await applyCompose([{ key: directionName === 'left' ? 'ArrowLeft' : 'ArrowRight' }]);
-    // The composer only knows the text before the caret; reload it so ゛゜小 and ⌫ keep working.
-    compose.load(mirror.chars.slice(0, mirror.caret).join(''));
-  });
+    });
+  };
 
   /**
    * 空白: convert, go to the next candidate, or type a space when idle.
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await space()
+   * space()
    */
-  const space = () => enqueue(async () => {
-    if (!active || !isComposing()) {
+  const space = () => slow(async () => {
+    if (conv) {
+      const seg = conv.segments[conv.cur];
+      seg.sel = (seg.sel + 1) % seg.candidates.length;
+      return;
+    }
+    if (!active || !mirror.chars.length) {
       send(direct.typeText(' '));
       return;
     }
-    await active.press([stroke(KEYSYM.space)]);
-    converting = true;
+    await startConversion();
   });
 
   /**
-   * ⏎: commit the composition; when idle, Enter in the target.
+   * ⏎: commit the conversion or the reading; when idle, Enter in the target.
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await enter()
+   * enter()
    */
-  const enter = () => enqueue(async () => {
-    if (!active || !isComposing()) {
-      send(direct.enter());
+  const enter = () => slow(() => {
+    if (conv || mirror.chars.length) {
+      commitAny();
       return;
     }
-    await commitInEngine();
+    send(direct.enter());
   });
 
   /**
-   * Move anthy's lookup-table cursor to a candidate with cursor keys (Page_Down/Page_Up, then
-   * Down/Up) and check, from the lookup-table signal, that it landed there.
-   *
-   * Never select with digit keys: in ibus-anthy a digit goes through __commit_nth_segment, which
-   * commits the text without anthy's commit_segment, so anthy never learns the choice. Cursor keys
-   * set the segment's candidate (do_cursor_down/up, page_down/up), and Return then commits every
-   * segment through commit_segment (or commit_prediction), which is what anthy learns from.
-   * @param {number} index - Candidate index in the full list
-   * @param {string} text - The candidate expected at that index
-   * @returns {Promise<boolean>} True when the cursor is on the candidate
-   * @example
-   * await moveCursorTo(3, '器械')
-   */
-  const moveCursorTo = async (index, text) => {
-    for (let attempt = 0; attempt < 2 && active.state.candidateCursor !== index; attempt += 1) {
-      const st = active.state;
-      const pageSize = st.pageSize > 0 ? st.pageSize : 5;
-      let cursor = st.candidateCursor;
-      const keys = [];
-      while (index - cursor >= pageSize) {
-        keys.push(stroke(KEYSYM.Page_Down));
-        cursor += pageSize;
-      }
-      while (cursor - index >= pageSize) {
-        keys.push(stroke(KEYSYM.Page_Up));
-        cursor -= pageSize;
-      }
-      for (; cursor < index; cursor += 1) keys.push(stroke(KEYSYM.Down));
-      for (; cursor > index; cursor -= 1) keys.push(stroke(KEYSYM.Up));
-      const before = st.lutSignals;
-      await active.press(keys);
-      await active.waitFor((s) => s.lutApplied > before && s.candidateCursor === index, LUT_TIMEOUT_MS);
-    }
-    const s = active.state;
-    return s.lutVisible && s.candidateCursor === index && s.candidates[index] === text;
-  };
-
-  /**
-   * Whether the segment being converted is the last one: its candidate ends where the preedit ends.
-   * @returns {boolean} True for the last (or only) segment, and for a prediction
-   * @example
-   * onLastSegment()
-   */
-  const onLastSegment = () => {
-    const s = active.state;
-    const current = s.candidates[s.candidateCursor] ?? '';
-    return s.preedit.startsWith(current, s.cursor) && s.cursor + current.length >= s.preedit.length;
-  };
-
-  /**
-   * Take a candidate of the lookup table anthy is showing: move the cursor onto it, then either go
-   * on to the next segment (Right; still converting, the panel shows that segment's candidates) or,
-   * on the last segment, commit everything with Return so anthy learns every segment.
-   * @param {number} index - Candidate index in the full list
-   * @param {string} [text] - The candidate the user saw (defaults to the one at index now)
-   * @param {boolean} [commitAll=false] - Always commit with Return (predictions replace the whole reading)
-   * @returns {Promise<void>} Resolves when applied
-   * @example
-   * await pickInLookup(3, '器械')
-   */
-  const pickInLookup = async (index, text, commitAll = false) => {
-    const { candidates } = active.state;
-    const wanted = text ?? candidates[index];
-    const at = candidates[index] === wanted ? index : candidates.indexOf(wanted);
-    if (!wanted || at < 0) return;
-    if (!await moveCursorTo(at, wanted)) {
-      warn('candidate cursor did not reach the tapped candidate; nothing committed');
-      return;
-    }
-    if (commitAll || onLastSegment()) {
-      await commitInEngine();
-      return;
-    }
-    const before = active.state.lutSignals;
-    await active.press([stroke(KEYSYM.Right)]);
-    await active.waitFor((s) => s.lutApplied > before && s.lutVisible, LUT_TIMEOUT_MS);
-  };
-
-  /**
-   * Commit text without anthy (katakana, or when anthy's table changed unexpectedly).
-   * @param {string} value - Text
-   * @returns {Promise<void>} Resolves when sent
-   * @example
-   * await commitDirect('カンジ')
-   */
-  const commitDirect = async (value) => {
-    await active.reset();
-    clearComposition();
-    send(direct.typeText(value));
-  };
-
-  /**
-   * Commit a live candidate. Everything anthy produced is committed through anthy with Return, so
-   * anthy learns it: the whole sentence (変換, then Return), a first-segment candidate (変換, cursor
-   * onto it, then as for a tap during conversion: next segment, or Return on the last one) and a
-   * prediction (Tab, cursor onto it, Return = commit_prediction). The hiragana reading is committed
-   * with Return as typed, and katakana directly (nothing to learn).
-   * @param {number} index - Index in the live list
-   * @returns {Promise<void>} Resolves when committed
-   * @example
-   * await pickLive(0)
-   */
-  const pickLive = async (index) => {
-    let item = live.items[index];
-    if (!item) return;
-    if (live.reading !== mirrorText(mirror)) {
-      // The list on screen was for an older reading: refresh, then look the same text up again.
-      const wanted = item;
-      live = { reading: '', items: [] };
-      await liveQuery(generation.current);
-      item = live.items.find((c) => c.text === wanted.text && c.kind === wanted.kind) ?? live.items.find((c) => c.text === wanted.text);
-      if (!item) return;
-    }
-    if (item.kind === 'katakana') {
-      await commitDirect(item.text);
-      return;
-    }
-    if (item.kind === 'hiragana') {
-      await commitInEngine();
-      return;
-    }
-    const opened = await pressForTable(stroke(item.kind === 'prediction' ? KEYSYM.Tab : KEYSYM.space), true, LUT_TIMEOUT_MS);
-    if (!opened.updated) {
-      await commitDirect(item.text);
-      return;
-    }
-    converting = true;
-    if (item.kind === 'whole') {
-      if (active.state.preedit === item.text) await commitInEngine();
-      else await commitDirect(item.text);
-      return;
-    }
-    const at = active.state.candidates.indexOf(item.text);
-    if (at < 0) {
-      await cancelConversion();
-      return;
-    }
-    await pickInLookup(at, item.text, item.kind === 'prediction');
-  };
-
-  /**
-   * Tap on a candidate: a live candidate while composing, or anthy's lookup table while converting.
+   * Tap on a candidate: a live candidate while composing, or the current segment's while converting.
    * @param {number} index - Candidate index as shown
-   * @param {string} [text] - The candidate as shown (guards against a table that changed meanwhile)
+   * @param {string} [shownText] - The candidate as shown
    * @returns {Promise<void>} Resolves when applied
    * @example
-   * await select(3, '器械')
+   * select(1, '器械')
    */
-  const select = (index, text) => enqueue(async () => {
+  const select = (index, shownText) => slow(async () => {
     if (!active) return;
-    if (converting) {
-      await pickInLookup(index, text);
+    if (conv) {
+      pickInConversion(index, shownText);
       return;
     }
-    if (mirror.chars.length) await pickLive(index);
+    if (mirror.chars.length) await pickLive(index, shownText);
   });
 
   /**
-   * Replace text right before the cursor (English suggestions). The count is read when the task
-   * runs, so it matches exactly what has been sent by then.
-   * @param {() => number} count - Returns how many characters to delete
-   * @param {string} value - Replacement text
+   * Replace text right before the cursor (commits first).
+   * @param {() => number} count - Characters to delete, read when the task runs
+   * @param {string} value - Replacement
    * @returns {Promise<void>} Resolves when sent
    * @example
-   * await replaceTail(() => 4, 'hello ')
+   * replaceTail(() => 4, 'hello ')
    */
-  const replaceTail = (count, value) => enqueue(async () => {
-    if (active) await commitInEngine();
+  const replaceTail = (count, value) => slow(() => {
+    commitAny();
     send(direct.replace(count(), value));
   });
 
   /**
-   * Commit whatever is being composed (before switching modes, typing a symbol, etc.).
+   * Commit whatever is composed (before switching modes, symbols, ...).
    * @returns {Promise<void>} Resolves when committed
    * @example
-   * await commitAll()
+   * commitAll()
    */
-  const commitAll = () => enqueue(async () => {
-    if (active) await commitInEngine();
-  });
+  const commitAll = () => slow(() => commitAny());
 
   /**
-   * Throw away the composition without committing (keyboard closed).
-   * @returns {Promise<void>} Resolves when discarded
+   * Throw the composition away (keyboard opened).
+   * @returns {Promise<void>} Resolves when done
    * @example
-   * await discard()
+   * discard()
    */
-  const discard = () => enqueue(async () => {
+  const discard = () => slow(() => {
     direct.reset();
-    if (!active) return;
-    if (isComposing()) await active.reset();
-    clearComposition();
+    clear();
   });
 
   /**
-   * Discard the composition and hand IBus back to the stock keyboard.
-   * @returns {Promise<void>} Resolves when released
+   * Throw the composition away (keyboard closed, overlay disabled).
+   * @returns {Promise<void>} Resolves when done
    * @example
-   * await release()
+   * release()
    */
-  const release = () => enqueue(async () => {
-    direct.reset();
-    clearComposition();
-    if (active) await active.release();
-  });
+  const release = discard;
 
   /**
-   * Engine signal: text committed by the engine goes to the target.
-   * @param {string} value - Committed text
+   * Start using a backend that became available after the controller was created.
+   * @param {ConversionBackend} value - Backend
    * @returns {void}
    * @example
-   * handleCommit('漢字')
+   * attachEngine(anthy)
    */
-  const handleCommit = (value) => {
-    if (value) send(direct.typeText(value));
+  const attachEngine = (value) => {
+    slow(() => {
+      if (active || !value) return;
+      active = value;
+      clear();
+    });
   };
 
   /**
-   * Engine signal: preedit or candidates changed. A visible lookup table outside a query or a
-   * conversion means a late signal left anthy converting (e.g. a prediction that arrived after we
-   * stopped waiting); the reading is then put back.
-   * @returns {void}
-   * @example
-   * handleUpdate()
-   */
-  const handleUpdate = () => {
-    if (active && !querying && !converting && !resyncQueued && mirror.chars.length && active.state.lutVisible) {
-      resyncQueued = true;
-      enqueue(async () => {
-        resyncQueued = false;
-        if (!converting && mirror.chars.length && active.state.lutVisible && !await backToReading()) await resync();
-      }, false);
-    }
-    onChange();
-  };
-
-  /**
-   * Describe what the candidate area should show.
+   * Describe what the candidate panel should show.
    * @returns {ImeView} The view
    * @example
    * view().candidates
@@ -834,19 +689,17 @@ export const createIme = ({
   const view = () => {
     const none = { preedit: '', caret: 0, segStart: 0, segLength: 0, candidates: [], selected: -1, source: 'none' };
     if (!active) return { phase: 'direct', ...none };
-    if (converting) {
-      const s = active.state;
-      const candidates = s.lutVisible ? s.candidates : [];
-      const current = s.candidates[s.candidateCursor] ?? '';
-      const segLength = current && s.preedit.startsWith(current, s.cursor) ? Array.from(current).length : 0;
+    if (conv) {
+      const before = conv.segments.slice(0, conv.cur).map((s) => s.candidates[s.sel] ?? s.reading).join('');
+      const seg = conv.segments[conv.cur];
       return {
         phase: 'converting',
-        preedit: s.preedit,
-        caret: s.cursor,
-        segStart: Array.from(s.preedit.slice(0, s.cursor)).length,
-        segLength,
-        candidates,
-        selected: candidates.length ? s.candidateCursor : -1,
+        preedit: convText(conv),
+        caret: len(before),
+        segStart: len(before),
+        segLength: len(seg.candidates[seg.sel] ?? seg.reading),
+        candidates: seg.candidates,
+        selected: seg.sel,
         source: 'lookup',
       };
     }
@@ -858,6 +711,7 @@ export const createIme = ({
         caret: mirror.caret,
         candidates: live.items.map((c) => c.text),
         source: 'live',
+        stale: live.items.length > 0 && live.reading !== mirrorText(mirror),
       };
     }
     return { phase: 'idle', ...none };
@@ -880,18 +734,19 @@ export const createIme = ({
     release,
     disableEngine,
     attachEngine,
-    handleCommit,
-    handleUpdate,
     view,
     /**
-     * Wait until every queued call has finished.
-     * @returns {Promise<void>} Resolves when the queue is empty
+     * Wait until queued tasks and the live request in flight are done.
+     * @returns {Promise<void>} Resolves when idle
      * @example
      * await flush()
      */
-    flush: () => queue,
+    flush: async () => {
+      await queue;
+      await liveTask;
+    },
     /**
-     * Live-candidate state and timing statistics (debug API).
+     * Live-candidate state and statistics (debug API).
      * @returns {object} Info
      * @example
      * liveInfo().lastMs
@@ -901,10 +756,9 @@ export const createIme = ({
       fresh: live.reading === mirrorText(mirror),
       items: live.items.map((c) => `${c.text}(${c.kind})`),
       ...stats,
-      keyWaits: [...stats.keyWaits],
     }),
     get busy() {
-      return pending > 0;
+      return slowPending > 0;
     },
   };
 };

@@ -1,13 +1,11 @@
-// Our copy of the kana being composed (before conversion), and the IBus key strokes that apply
-// the same edit inside anthy. Pure logic, no IBus objects.
+// Our copy of the kana being composed (before conversion), with a caret. Pure logic.
 //
 // The composer describes edits relative to the cursor ({text}, Backspace, ArrowLeft/Right). We apply
-// them to the mirror and emit the matching strokes, so anthy's preedit and the mirror stay equal.
-import { KEYSYM, stroke, textToStrokes } from './romaji.js';
+// them here; conversion reads the resulting text directly (libanthy accepts any character, so
+// symbols such as ～ stay in the reading).
 
 /**
  * @typedef {{chars: string[], caret: number}} Mirror
- * @typedef {import('./romaji.js').KeyStroke} KeyStroke
  * @typedef {import('./composer.js').OutputOp} OutputOp
  */
 
@@ -27,50 +25,35 @@ export const mirrorOf = (text) => {
 };
 
 /**
- * Apply composer operations to the mirror and compute the anthy key strokes for them.
- * Moves past either end are dropped (no stroke), like a text field would ignore them.
+ * Apply composer operations to the mirror.
+ * Moves past either end are dropped, like a text field would ignore them.
  * @param {Mirror} mirror - Current mirror (not modified)
  * @param {OutputOp[]} ops - Operations from the composer
- * @returns {{mirror: Mirror, strokes: KeyStroke[], skipped: string[]}} New mirror, strokes, and characters that anthy cannot type
+ * @returns {{mirror: Mirror}} The new mirror
  * @example
- * applyOps(mirrorOf('か'), [{ key: 'Backspace' }, { text: 'が' }]).strokes.length // 3 (BackSpace, g, a)
+ * mirrorText(applyOps(mirrorOf('か'), [{ key: 'Backspace' }, { text: 'が' }]).mirror) // "が"
  */
 export const applyOps = (mirror, ops) => {
   const chars = [...mirror.chars];
   let caret = mirror.caret;
-  const strokes = [];
-  const skipped = [];
   for (const op of ops) {
     if ('text' in op) {
       for (const ch of Array.from(op.text)) {
-        const result = textToStrokes(ch);
-        if (result.skipped.length) {
-          skipped.push(ch);
-          continue;
-        }
         chars.splice(caret, 0, ch);
         caret += 1;
-        strokes.push(...result.strokes);
       }
     } else if (op.key === 'Backspace') {
       if (caret > 0) {
         chars.splice(caret - 1, 1);
         caret -= 1;
-        strokes.push(stroke(KEYSYM.BackSpace));
       }
     } else if (op.key === 'ArrowLeft') {
-      if (caret > 0) {
-        caret -= 1;
-        strokes.push(stroke(KEYSYM.Left));
-      }
+      if (caret > 0) caret -= 1;
     } else if (op.key === 'ArrowRight') {
-      if (caret < chars.length) {
-        caret += 1;
-        strokes.push(stroke(KEYSYM.Right));
-      }
+      if (caret < chars.length) caret += 1;
     }
   }
-  return { mirror: { chars, caret }, strokes, skipped };
+  return { mirror: { chars, caret } };
 };
 
 /**

@@ -5,7 +5,9 @@ import { computeBounds } from './bounds.js';
 import { createComposer } from './composer.js';
 import { WORDS_EN } from './data/words-en.js';
 import { createDictionary, createWordTracker, decodeWords, suggest } from './english.js';
-import { createIBusEngine } from './ibus.js';
+import { createEnglishComposition, isWordChar } from './english-compose.js';
+import { createAnthyClient } from './anthy-client.js';
+import { installApiRecorder } from './api-recorder.js';
 import { createIme } from './ime.js';
 import { createKeyboardState } from './keyboard-state.js';
 import { log, warn } from './log.js';
@@ -17,12 +19,15 @@ import {
   getKeyboardPopupWindow,
   getWebpackRequire,
   missingPrerequisites,
+  getKeyboardManagers,
+  isOurCall,
 } from './steam.js';
 import { mountOverlay } from './ui.js';
 
 /* global __FJK_VERSION__ */
 const VERSION = typeof __FJK_VERSION__ === 'string' ? __FJK_VERSION__ : 'dev';
-const TICK_MS = 500;
+/** Popup and open/close check. Short, so an English word is committed soon after a close. */
+const TICK_MS = 150;
 const PREREQ_POLL_MS = 1000;
 const PREREQ_TIMEOUT_MS = 180_000;
 
@@ -56,7 +61,10 @@ const install = () => {
   const shift = createShift();
   const direct = createComposer(() => settings);
   const compose = createComposer(() => settings);
-  const output = createOutput();
+  const output = createOutput(() => {
+    const status = statusStore?.VRKeyboardStatus;
+    return { buffered: !!status?.bIsOpen && !status.bMinimal, vrStatus: status };
+  });
   /** @type {import('./composer.js').OutputOp[]|null} Debug capture: when set, output goes here instead of Steam. */
   let captured = null;
 
@@ -76,14 +84,25 @@ const install = () => {
     return output(ops);
   };
 
-  /** Follows the word being typed, for English suggestions and auto-capitalization. */
+  /** Follows the text sent to the target (for auto-capitalization after ". "). */
   const tracker = createWordTracker();
+  /** The English word being typed on the QWERTY keyboard, shown in the composition line. */
+  const english = createEnglishComposition();
   /** @type {import('./english.js').Dictionary|null} */
   let dictionary = null;
   /** @type {import('./english.js').Suggestion[]} */
   let suggestions = [];
   /** @type {string[]} Candidates as last drawn, so a tap commits exactly what the user saw. */
   let shownCandidates = [];
+
+  /**
+   * A tap on a candidate in the left panel (the UI and the debug API use this same path).
+   * @param {number} index - Index of the candidate as drawn
+   * @returns {Promise<void>} Resolves when applied
+   * @example
+   * tapCandidate(0)
+   */
+  const tapCandidate = (index) => ime.select(index, shownCandidates[index]);
 
   /**
    * The English dictionary, decoded on first use (~20 ms for 40,000 words).
@@ -102,7 +121,7 @@ const install = () => {
    * @example
    * autoCapital()
    */
-  const autoCapital = () => settings.autoCapitalize && pages.page === 'qwerty' && shift.state === 'off' && tracker.sentenceStart;
+  const autoCapital = () => settings.autoCapitalize && pages.page === 'qwerty' && shift.state === 'off' && !english.word && tracker.sentenceStart;
 
   /**
    * Whether a sentence starts here (auto-capitalization on, QWERTY page), ignoring shift.
@@ -119,8 +138,31 @@ const install = () => {
    * currentSuggestions()
    */
   const currentSuggestions = () => {
-    if (!settings.suggestions || !['qwerty', 'num', 'num2'].includes(pages.page) || !tracker.word) return [];
-    return suggest(getDictionary(), tracker.word);
+    if (!settings.suggestions || !englishPage() || !english.word) return [];
+    // The word itself is shown in the composition line, so the "typed" entry is left out.
+    return suggest(getDictionary(), english.word).filter((s) => s.kind !== 'typed');
+  };
+
+  /**
+   * Whether an English page is shown (the composition line belongs to these pages).
+   * @returns {boolean} True for QWERTY and the number pages
+   * @example
+   * englishPage()
+   */
+  const englishPage = () => ['qwerty', 'num', 'num2'].includes(pages.page);
+
+  /**
+   * Commit the English word (with a suffix such as a space or punctuation) to the target, through
+   * the same output path as everything else.
+   * @param {string} [suffix=''] - Text after the word
+   * @returns {Promise<void>} Resolves when sent
+   * @example
+   * commitEnglish(' ')
+   */
+  const commitEnglish = (suffix = '') => {
+    const ops = english.commit(suffix);
+    scheduleRender();
+    return ops.length ? ime.text(ops[0].text).then(scheduleRender) : Promise.resolve();
   };
 
   /** @type {ReturnType<typeof mountOverlay>|null} */
@@ -131,6 +173,16 @@ const install = () => {
   let statusStore = null;
   let wasOpen = false;
   let tickTimer;
+  /**
+   * Diagnostics (settings.debugRecorders, off by default; read once per injection): raw input around
+   * each press, key gestures, calls into Steam's keyboard API and VR keyboard state changes, all
+   * without text. Only then are any Steam functions wrapped (api-recorder.js).
+   */
+  const diagnostics = settings.debugRecorders === true;
+  /** @type {ReturnType<typeof installApiRecorder>|null} */
+  let apiRecorder = null;
+  /** Last logged VR keyboard state (diagnostics). */
+  let lastVrState = '';
   let prereqTimer;
   let renderQueued = false;
 
@@ -150,7 +202,7 @@ const install = () => {
         const view = ime.view();
         shownCandidates = view.candidates;
         const shiftShown = autoCapital() ? 'once' : shift.state;
-        overlay?.render({ page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions });
+        overlay?.render({ page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions, english: { text: english.word, caret: english.caret } });
       } catch (error) {
         warn('render failed', error);
       }
@@ -168,13 +220,18 @@ const install = () => {
     predictions: settings.predictions,
   });
 
-  /** @type {ReturnType<typeof createIBusEngine>|null} */
+  /** Kana-kanji conversion served by the injector (libanthy); no IBus is involved. */
+  /** @type {ReturnType<typeof createAnthyClient>|null} */
   let engine = null;
   if (settings.conversion) {
-    engine = createIBusEngine({ onCommit: (text) => ime.handleCommit(text), onUpdate: () => ime.handleUpdate() });
+    engine = createAnthyClient({ warn });
     engine.init().then((ok) => {
-      if (ok && api.state !== 'uninstalled') ime.attachEngine(engine);
-      else if (!ok) warn('IBus/anthy unavailable; falling back to direct hiragana input');
+      if (ok && api.state !== 'uninstalled') {
+        ime.attachEngine(engine);
+        log('conversion ready (libanthy via the injector)');
+      } else if (!ok) {
+        warn('conversion backend unavailable (injector too old or libanthy missing); typing hiragana directly');
+      }
     });
   } else {
     log('conversion disabled in settings; typing hiragana directly');
@@ -182,7 +239,7 @@ const install = () => {
 
   /**
    * Turn our overlay on (our keyboard) or off (stock Steam keyboard with a small re-enable button).
-   * Turning it off hands IBus back to the stock keyboard.
+   * Turning it off commits the English word and drops the kana composition.
    * @param {boolean} value - Enabled state
    * @returns {void}
    * @example
@@ -191,7 +248,10 @@ const install = () => {
   const setEnabled = (value) => {
     settings.enabled = !!value;
     saveSettings(settings);
-    if (!settings.enabled) ime.release();
+    if (!settings.enabled) {
+      commitEnglish();
+      ime.release();
+    }
     overlay?.setEnabled(settings.enabled);
     scheduleRender();
     log(settings.enabled ? 'overlay enabled' : 'overlay disabled (stock keyboard)');
@@ -204,10 +264,61 @@ const install = () => {
    * toggleMode()
    */
   const toggleMode = () => {
+    commitEnglish();
     ime.commitAll();
     shift.reset();
     settings.mode = pages.toggleMode();
     saveSettings(settings);
+  };
+
+  /**
+   * Actions that behave differently while an English word is composed.
+   * @param {string} id - Action id
+   * @returns {boolean} True when handled here
+   * @example
+   * handleEnglishAction('space')
+   */
+  const handleEnglishAction = (id) => {
+    const composing = english.word.length > 0;
+    switch (id) {
+      case 'backspace': {
+        const ops = english.backspace();
+        if (ops.length) ime.backspace();
+        return true;
+      }
+      case 'left':
+      case 'right': {
+        const ops = english.arrow(id);
+        if (ops.length) ime.arrow(id);
+        return true;
+      }
+      case 'space':
+        if (!composing) return false;
+        commitEnglish(' ');
+        return true;
+      case 'enter':
+        if (!composing) return false;
+        commitEnglish();
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  /**
+   * The close button: commit whatever is being typed (through the normal output), then close
+   * the keyboard with the key the stock keyboard uses: VKDone when the popup asks for a Done key,
+   * otherwise VKClose (VirtualKeyboardManager.HandleVirtualKeyDown hides the keyboard for both).
+   * @returns {Promise<void>} Resolves when the close key has been queued
+   * @example
+   * closeKeyboard()
+   */
+  const closeKeyboard = () => {
+    commitEnglish();
+    const key = statusStore?.VRKeyboardStatus?.bShowDoneKey ? 'VKDone' : 'VKClose';
+    return ime.commitAll().then(() => {
+      send([{ key }]);
+    });
   };
 
   /**
@@ -218,6 +329,10 @@ const install = () => {
    * handleAction('backspace')
    */
   const handleAction = (id) => {
+    if (englishPage() && handleEnglishAction(id)) {
+      scheduleRender();
+      return;
+    }
     switch (id) {
       case 'undo': ime.undo(); break;
       case 'backspace': ime.backspace(); break;
@@ -237,7 +352,11 @@ const install = () => {
         pages.show(id);
         break;
       case 'back': pages.back(); break;
+      case 'close':
+        closeKeyboard();
+        break;
       case 'stock':
+        commitEnglish();
         ime.commitAll();
         setEnabled(false);
         break;
@@ -255,6 +374,22 @@ const install = () => {
    * handleChar(def, 'up')
    */
   const handleChar = (def, direction) => {
+    if (englishPage()) {
+      const flicked = direction === 'up' && def.up;
+      if (def.letter && !flicked) {
+        // Auto-capitalize the first letter of a word at a sentence start (shift off).
+        const shifted = shift.state !== 'off';
+        const ch = shift.apply(def.ch);
+        english.input(!shifted && !english.word && sentenceStartHere() ? ch.toUpperCase() : ch);
+      } else {
+        const ch = flicked ? def.up : def.ch;
+        // Letters stay in the word; punctuation, symbols and digits commit it followed by themselves.
+        if (isWordChar(ch)) english.input(ch);
+        else commitEnglish(ch);
+      }
+      scheduleRender();
+      return;
+    }
     if (direction === 'up' && def.up) {
       ime.text(def.up).then(scheduleRender);
     } else if (def.letter) {
@@ -277,10 +412,13 @@ const install = () => {
    * pickSuggestion(0)
    */
   const pickSuggestion = (index) => {
+    shift.reset();
+    if (index === -1) return commitEnglish(' ');
     const picked = suggestions[index];
     if (!picked) return Promise.resolve();
-    shift.reset();
-    return ime.replaceTail(() => Array.from(tracker.word).length, `${picked.text} `).then(scheduleRender);
+    const ops = english.commitAs(picked.text, ' ');
+    scheduleRender();
+    return ime.text(ops[0].text).then(scheduleRender);
   };
 
   /**
@@ -291,9 +429,11 @@ const install = () => {
    */
   const tick = () => {
     try {
+      apiRecorder?.refresh();
       const win = getKeyboardPopupWindow();
       const doc = win?.document ?? null;
       if (overlay && (doc !== overlayDoc || !overlay.host.isConnected)) {
+        commitEnglish();
         overlay.destroy();
         overlay = null;
         overlayDoc = null;
@@ -305,9 +445,11 @@ const install = () => {
           onKana: (keyId, direction) => ime.kana(keyId, direction),
           onChar: handleChar,
           onAction: handleAction,
-          onCandidate: (index) => ime.select(index, shownCandidates[index]),
+          onCandidate: tapCandidate,
           onSuggestion: pickSuggestion,
           onEnable: () => setEnabled(true),
+          onRecord: diagnostics ? (w) => log(`rec ${JSON.stringify(w)}`) : undefined,
+          onGesture: diagnostics ? (record) => log(`gesture ${JSON.stringify(record)}`) : undefined,
         });
         overlayDoc = doc;
         overlay.setEnabled(settings.enabled);
@@ -316,13 +458,24 @@ const install = () => {
       }
       const status = statusStore?.VRKeyboardStatus;
       const open = status ? !!status.bIsOpen : !!doc;
+      if (diagnostics) {
+        // Every change of the VR keyboard's state, whoever's keyboard is shown.
+        const vrState = status ? `open=${!!status.bIsOpen} mode=${status.bMinimal ? 'minimal' : 'buffered'} target=${status.sOverlayKey || '-'} app=${status.unAppID} dispatch=${!!status.bDispatchEventsToSteamVR}` : 'no status';
+        const state = `${vrState} popup=${doc ? 'yes' : 'no'} ours=${settings.enabled ? 'on' : 'off'}`;
+        if (state !== lastVrState) log(`vr keyboard: ${state}`);
+        lastVrState = state;
+      }
       if (open && !wasOpen) {
+        // An English word left over (a close we did not see) stays composed on screen: it is neither
+        // sent to the new target nor thrown away; the user commits or deletes it.
         ime.discard();
         tracker.reset();
         overlay?.cancelGesture();
         log(`keyboard opened${status ? ` (${status.bMinimal ? 'minimal' : 'buffered'} mode)` : ''}`);
       } else if (!open && wasOpen) {
-        // Nothing composed is sent; IBus goes back to the stock keyboard's state.
+        // The English word is committed (best effort: we notice the close after it happened);
+        // the kana composition is discarded as before.
+        commitEnglish();
         ime.release();
         overlay?.cancelGesture();
         log('keyboard closed');
@@ -335,6 +488,34 @@ const install = () => {
   };
 
   /**
+   * State that decides where a HandleVirtualKeyDown call goes, for the debug recorder (no text).
+   * @param {string} label - Recorded method
+   * @param {any} target - The object called (a VirtualKeyboardManager for VKM methods)
+   * @param {unknown[]} args - Call arguments
+   * @returns {object|undefined} Extra log fields
+   * @example
+   * apiCallState('VKM0.HandleVirtualKeyDown', manager, ['Enter', false])
+   */
+  const apiCallState = (label, target, args) => {
+    if (!label.endsWith('.HandleVirtualKeyDown')) return undefined;
+    const status = statusStore?.VRKeyboardStatus;
+    const state = {
+      override: typeof target?.m_fnVROnTextEnteredOverride === 'function',
+      mode: status ? (status.bIsOpen ? (status.bMinimal ? 'minimal' : 'buffered') : 'closed') : '?',
+      fjk: settings.enabled && !!overlay,
+    };
+    if (args[0] !== 'Enter') return state;
+    const onEnter = target?.m_ActiveElementProps?.onEnterKeyPress;
+    return {
+      ...state,
+      onEnter: onEnter === undefined ? 'none' : typeof onEnter,
+      dismissOnEnter: !!target?.m_bDismissOnEnter,
+      target: status?.sOverlayKey || null,
+      dispatchVR: status ? !!status.bDispatchEventsToSteamVR : null,
+    };
+  };
+
+  /**
    * Start once Steam's objects exist.
    * @returns {void}
    * @example
@@ -344,13 +525,26 @@ const install = () => {
     statusStore = findVRStatusStore(getWebpackRequire());
     if (!statusStore) warn('VRKeyboardStatus store not found; open/close tracking disabled');
     api.state = 'running';
+    if (diagnostics) {
+      try {
+        apiRecorder = installApiRecorder({
+          getManagers: getKeyboardManagers,
+          isOurs: isOurCall,
+          onCall: (entry) => log(`vk ${JSON.stringify(entry)}`),
+          extra: apiCallState,
+        });
+        log(`debug recorders on (${apiRecorder.count} Steam methods wrapped)`);
+      } catch (error) {
+        warn('api recorder failed', error);
+      }
+    }
     tickTimer = setInterval(tick, TICK_MS);
     tick();
     log(`installed ${VERSION}`);
   };
 
   /**
-   * Remove everything this instance added and hand IBus back.
+   * Remove everything this instance added.
    * @returns {void}
    * @example
    * window.__fjk.uninstall()
@@ -358,23 +552,25 @@ const install = () => {
   const uninstall = () => {
     clearInterval(tickTimer);
     clearInterval(prereqTimer);
+    apiRecorder?.uninstall();
+    apiRecorder = null;
+    commitEnglish(); // never drop a word being typed (e.g. when a new build is injected)
     overlay?.destroy();
     overlay = null;
-    ime.release().finally(() => engine?.destroy().catch((error) => warn('IBus cleanup failed', error)));
+    ime.release().finally(() => engine?.destroy());
     if (globalThis.__fjk === api) delete globalThis.__fjk;
     api.state = 'uninstalled';
     log(`uninstalled ${VERSION}`);
   };
 
   /**
-   * Wait until queued input has been applied and IBus signals have arrived (debug API).
+   * Wait until queued input has been applied and live candidates have arrived (debug API).
    * @returns {Promise<{view: import('./ime.js').ImeView, output: import('./composer.js').OutputOp[]|null}>} Current view and captured output
    * @example
    * await drained()
    */
   const drained = async () => {
     await ime.flush();
-    await engine?.settle();
     return { view: ime.view(), output: captured ? [...captured] : null };
   };
 
@@ -394,6 +590,18 @@ const install = () => {
   // Test hooks for driving the input method without a headset. Call debug.capture(true) first so
   // committed text is collected in debug.output instead of being typed into whatever has focus.
   const debug = {
+    /**
+     * Turn the diagnostic recorders on or off (saved; takes effect on the next injection).
+     * @param {boolean} on - Recorders on/off
+     * @returns {boolean} The saved setting
+     * @example
+     * __fjk.debug.recorders(true)
+     */
+    recorders: (on) => {
+      settings.debugRecorders = !!on;
+      saveSettings(settings);
+      return settings.debugRecorders;
+    },
     /**
      * Collect output instead of sending it to Steam.
      * @param {boolean} on - Capture on/off
@@ -434,13 +642,33 @@ const install = () => {
       return step(Promise.resolve());
     },
     /**
-     * Pick a candidate.
+     * Pick a candidate by its index in the panel (throws for an index that is not shown).
      * @param {number} index - Candidate index
      * @returns {Promise<object>} View and captured output
      * @example
      * await __fjk.debug.select(1)
      */
-    select: (index) => step(ime.select(index)),
+    select: (index) => {
+      const shown = ime.view().candidates;
+      if (!Number.isInteger(index) || index < 0 || index >= shown.length) {
+        throw new RangeError(`no candidate at index ${index} (${shown.length} shown)`);
+      }
+      return step(ime.select(index, shown[index]));
+    },
+    /**
+     * Tap the candidate with this text, exactly as the UI does (index as drawn in the panel).
+     * @param {string} text - Candidate text as shown
+     * @returns {Promise<object>} View and captured output
+     * @example
+     * await __fjk.debug.tap('今日はいい天気')
+     */
+    tap: (text) => {
+      scheduleRender();
+      const index = ime.view().candidates.indexOf(text);
+      if (index < 0) throw new RangeError(`candidate not shown: ${text}`);
+      shownCandidates = ime.view().candidates;
+      return step(tapCandidate(index));
+    },
     /**
      * Type literal text (like a QWERTY or symbol key).
      * @param {string} text - Text
@@ -450,7 +678,7 @@ const install = () => {
      */
     text: (text) => step(ime.text(text)),
     /**
-     * Release IBus as when the keyboard closes.
+     * Drop the composition as when the keyboard closes.
      * @returns {Promise<object>} View and captured output
      * @example
      * await __fjk.debug.release()
@@ -496,7 +724,7 @@ const install = () => {
         handleChar({ type: 'char', id: c, ch: letter ? c.toLowerCase() : c, label: c, w: 1, letter }, 'center');
       }
       await ime.flush();
-      return { word: tracker.word, sentenceStart: tracker.sentenceStart, autoCapital: autoCapital(), suggestions: currentSuggestions(), output: captured ? [...captured] : null };
+      return { composing: english.word, sentenceStart: tracker.sentenceStart, autoCapital: autoCapital(), suggestions: currentSuggestions(), output: captured ? [...captured] : null };
     },
     /**
      * Tap an English suggestion.
@@ -508,7 +736,7 @@ const install = () => {
     suggestion: async (index) => {
       suggestions = currentSuggestions();
       await pickSuggestion(index);
-      return { word: tracker.word, output: captured ? [...captured] : null };
+      return { composing: english.word, output: captured ? [...captured] : null };
     },
     /**
      * Show a page (like tapping あA / 123 / ☺記), for tests.
@@ -522,6 +750,76 @@ const install = () => {
       scheduleRender();
       return shown;
     },
+    /**
+     * Press a kana key and measure how long until the panel draws it (local echo), and until anthy
+     * has the strokes. Frames are counted with the popup's requestAnimationFrame.
+     * @param {string} keyId - Kana key id
+     * @param {string} [direction='center'] - Flick direction
+     * @returns {Promise<{sameTask: boolean, domMs: number, drawnMs: number, frames: number, anthyMs: number}>} Timings
+     * @example
+     * await __fjk.debug.echo('ka')
+     */
+    echo: async (keyId, direction = 'center') => {
+      const win = overlayDoc?.defaultView;
+      const before = overlay?.preeditText() ?? '';
+      const t0 = performance.now();
+      const task = ime.kana(keyId, direction);
+      // Our render runs as a microtask after the edit: check the DOM before any timer or frame.
+      await Promise.resolve();
+      await Promise.resolve();
+      const sameTask = overlay ? overlay.preeditText() !== before : false;
+      const domMs = performance.now() - t0;
+      let frames = 0;
+      while (overlay && overlay.preeditText() === before && frames < 120) {
+        await Promise.race([
+          new Promise((resolve) => win?.requestAnimationFrame(resolve)),
+          new Promise((resolve) => setTimeout(resolve, 20)),
+        ]);
+        frames += 1;
+      }
+      const drawnMs = performance.now() - t0;
+      await task;
+      return { sameTask, domMs: Math.round(domMs * 10) / 10, drawnMs: Math.round(drawnMs * 10) / 10, frames, anthyMs: Math.round(performance.now() - t0) };
+    },
+    /**
+     * Measure the round trip page -> injector (libanthy) -> page with conversions and predictions
+     * only (nothing is typed or committed, so anthy learns nothing).
+     * @param {number} [count=12] - Number of requests
+     * @returns {Promise<object>} Round-trip times in ms
+     * @example
+     * await __fjk.debug.anthyLatency()
+     */
+    anthyLatency: async (count = 12) => {
+      if (!engine) return { error: 'no backend' };
+      const readings = ['かんじ', 'きょうはいいてんき', 'にほんご', 'でんしゃ'];
+      const convert = [];
+      const predict = [];
+      for (let i = 0; i < count; i += 1) {
+        const reading = readings[i % readings.length];
+        let t0 = performance.now();
+        await engine.convert(reading);
+        convert.push(Math.round((performance.now() - t0) * 10) / 10);
+        t0 = performance.now();
+        await engine.predict(reading);
+        predict.push(Math.round((performance.now() - t0) * 10) / 10);
+      }
+      /**
+       * Median of a list.
+       * @param {number[]} xs - Values
+       * @returns {number} Median
+       * @example
+       * median([3, 1, 2]) // 2
+       */
+      const median = (xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)];
+      return { convertMs: { median: median(convert), max: Math.max(...convert) }, predictMs: { median: median(predict), max: Math.max(...predict) }, convert, predict };
+    },
+    /**
+     * Laser cursors and recent key gestures (numbers only).
+     * @returns {object|null} Info, or null when no overlay is mounted
+     * @example
+     * __fjk.debug.gestures().gestures.at(-1)
+     */
+    gestures: () => overlay?.gestures() ?? null,
     /**
      * Live-candidate info and timings (reading, items, query ms, key wait ms).
      * @returns {object} Info
@@ -541,7 +839,6 @@ const install = () => {
       mode: pages.mode,
       shift: shift.state,
       engine: engine?.info ?? null,
-      engineState: engine ? { ...engine.state } : null,
       output: captured ? [...captured] : null,
     }),
   };

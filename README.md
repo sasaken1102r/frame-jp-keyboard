@@ -2,7 +2,7 @@
 
 Steam Frame の VR キーボードに、スマホでおなじみの**12 キーのフリック入力**、**かな漢字変換**、**英単語の候補つきの QWERTY** を重ねて表示する。Steam のファイルは書き換えない。Steam クライアントの中（SharedJSContext）に Chrome DevTools Protocol で JS を差し込んで動かす。
 
-- 変換には、Steam が持っている IBus（ibus-anthy）をそのまま使う。
+- 変換には、本体に入っている anthy（libanthy）を差し込み役（Python）から直接使う。IBus は使わないので、純正キーボードの状態には触らない。学習データ（`~/.anthy`）は純正キーボードと共有する。
 - 自作キーボードで足りないときは、いつでも純正キーボードに切り替えられる。
 
 > **非公式のツールです。** Valve とは関係ありません。Steam の非公開の仕組みに頼っているので、Steam の更新で動かなくなることがあります。自己責任で使ってください（下の「注意」を読んでください）。
@@ -47,7 +47,7 @@ cd frame-jp-keyboard
 
 - **フリック**: キーの上でトリガーを引いたまま、レーザーを上下左右に振って離す。
 - **変換**: 打つと左に候補が出るので、タップで選ぶ（後ろに文節が続くときは次の文節へ進み、最後の文節なら確定）。「空白」で次の候補、「⏎」で全部確定。選んだ候補は次から上に来る。
-- **あA**: 日本語 ⇔ 英語。英語では、キーの上に単語の候補が出る。
+- **あA**: 日本語 ⇔ 英語。英語では、打っている単語がキーの上に出て、スペース・記号・⏎・候補のタップで確定する。
 - **☺記**: 記号のページ。
 - **純正キーボードに戻す**: あA を長押し（または「Steam ⌨」）。自作に戻すときは右上の「あ」。
 
@@ -72,23 +72,27 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 ## うまく動かないとき
 
 - **ログを見る**: `journalctl --user -u frame-jp-keyboard -f`。JS 側のログは `[fjk]` 付きで出る。
-  - `IBus conversion ready (anthy)` … 変換が使える。
-  - `IBus/anthy unavailable; falling back to direct hiragana input` … 変換が使えないので、ひらがなをそのまま入力している（候補バーに「変換なし」と出る）。
-  - `switching IBus engine … while composing` / `restored IBus engine …` … 純正キーボードが英語のとき、入力中だけ anthy に切り替えて、閉じたら元に戻した記録。
+  - `libanthy loaded` と `conversion ready` … 変換が使える。
+  - `conversion backend unavailable` / `libanthy unavailable` … 変換が使えないので、ひらがなをそのまま入力している（候補の欄に「変換なし」と出る）。
 - **差し直す**: `python3 ~/.local/share/frame-jp-keyboard/frame_jp_keyboard_injector.py --once`。古いものを外してから新しいものを入れる。
 - **その場で外す**: CDP コンソールで `__fjk.uninstall()`。ただしサービスが動いていると、数秒後にまた差し込まれる。止めるなら `systemctl --user stop frame-jp-keyboard` のあとに `__fjk.uninstall()`。完全に消すなら `./install.sh --uninstall` のあと Steam を再起動する。
+- **調査用の記録**: CDP コンソールで `__fjk.debug.recorders(true)` のあと差し直すと、押した前後の入力・フリックの判定・Steam のキーボードへの呼び出しをログに出す（入力した文字は出さない。代わりに、実行中のアプリの ID やオーバーレイの名前は出る。`recorders(false)` で戻す）。既定はオフで、そのときは Steam の関数を一切包まない。
 - 必要な Steam の中身が見つからないときは何もしないで、純正キーボードをそのまま残す（ログに `[fjk]` の警告が出る）。
-- 開発用: CDP コンソールで `__fjk.debug.capture(true)` のあと `await __fjk.debug.type('かんじ')`、`await __fjk.debug.key('space')` などで、ヘッドセットなしに変換を試せる（確定した文字は入力先に送らず `output` にたまる）。`__fjk.debug.live()` で、いまの候補と時間（候補の計算 `lastMs`、キーの待ち時間 `keyWaits`）が見られる。英語は `await __fjk.debug.english('helo')`、`await __fjk.debug.suggestion(1)`。画面の寸法は `__fjk.debug.measure('kana')`。
-- 表示の位置がおかしいとき: 自作キーボードは純正キーボードの枠（`Layout_…`）にぴったり重ねる。その枠の位置が変なとき（ポップアップの大きさが変わったときなど）は、ポップアップ全体から下の 41 px（SteamVR の移動バーの場所）を除いた範囲に出す。
-- 候補が出るのが遅いとき: 候補は IBus を何回か呼んで作る。VR の描画中は IBus の呼び出しが 1 回 15〜40 ms かかるので、候補が出るまで 0.3〜0.5 秒ほどかかることがある（打った文字の表示は待たない）。
+- 開発用: CDP コンソールで `__fjk.debug.capture(true)` のあと `await __fjk.debug.type('かんじ')`、`await __fjk.debug.key('space')` などで、ヘッドセットなしに変換を試せる（確定した文字は入力先に送らず `output` にたまる）。`__fjk.debug.live()` で、いまの候補と時間（候補の計算 `lastMs`）が見られる。英語は `await __fjk.debug.english('helo')`、`await __fjk.debug.suggestion(1)`。画面の寸法は `__fjk.debug.measure('kana')`。
+- 表示の位置がおかしいとき: 自作キーボードは純正キーボードのキーの枠にぴったり重ねる。その枠の位置が変なとき（ポップアップの大きさが変わったときなど）は、ポップアップ全体から下の 41 px（SteamVR の移動バーの場所）を除いた範囲に出す。
+
+## 既知の問題
+
+- **確定した日本語の一部が、まれに数字（1、2、3…）に化ける**ことがある（例: 3 文字目だけ「3」になる）。アプリに届ける仕組み自体は純正キーボードと同じで、原因は調査中。起きたら消して打ち直してください。
+- **両手のレーザーをキーボードに向けていると、片方の手ではフリック中の案内が動かない**。SteamVR がその手の位置を離すまで送ってこないため。フリック自体はできて、離したときに入る文字が光る。片手だけ向ければ普通に出る。
 
 ## 注意
 
 - **非公式**のツールです。Valve が作ったり、確認したり、サポートしたりしているものではありません。Steam および Steam Frame は、米国および／またはその他の国における Valve Corporation の商標および／または登録商標です。本プロジェクトは Valve と提携・承認・後援関係にありません。
 - Steam の画面の中で自作の JavaScript を動かしますが、使うのは開発者モードのときだけ Valve 自身が開くデバッグ用の口（`127.0.0.1:8080`、Chrome DevTools Protocol）だけで、ディスク上の Steam のファイルは一切書き換えません。とはいえ、[Steam 利用規約](https://store.steampowered.com/subscriber_agreement/?l=japanese)には、これに当てはまり得る条項が 2 つあります。**2.G** は、Steam のソフトウェアやコンテンツのリバースエンジニアリング・複製・改変などを、「適用される法律に基づき別途許可される場合を除き」禁じています。**4.B** は、「Valve が別途許可しない限り」Steam の実行プロセスを改ざんしないこと、認められていないサードパーティソフトウェアで Steam のプロセスや UI とやり取り・制御しないことに同意する、としています。同じ仕組みの Decky Loader などは広く使われていますが、Valve が公式に認めたものではありません。**使うかどうかはご自身で判断してください。**
 - 無保証です（LICENSE を参照）。**このソフトウェアの使用によって生じたいかなる損害（本体やアカウントに関するものを含む）についても、作者は一切の責任を負いません。**
-- Steam の非公開の中身（SharedJSContext の内部オブジェクト、IBus バインディング、`VirtualKeyboardManager`）に頼っている。**Steam クライアントの更新で動かなくなることがある**。そのときは何もしないで純正キーボードに戻るように作ってあるので、ログを見て対応する。
-- 変換エンジン（anthy）は純正キーボードと共有している。自作キーボードは自分専用の IBus 入力コンテキストを使い、キーボードを閉じたときや純正に切り替えたときに、IBus を元の状態（エンジン・フォーカス）に戻す。
+- Steam の非公開の中身（SharedJSContext の内部オブジェクト、`VirtualKeyboardManager`、`SteamClient.OpenVR`）に頼っている。**Steam クライアントの更新で動かなくなることがある**。そのときは何もしないで純正キーボードに戻るように作ってあるので、ログを見て対応する。
+- anthy の学習データは純正キーボード（ibus-anthy）と同じファイルを使う。anthy はロックファイルと差分ファイルで複数のプロセスからの書き込みを扱う作りなので、同時に使っても壊れない。
 - 変換で選んだ候補は anthy が学習する（純正キーボードで変換したときと同じ）。候補を出すための変換（打つたびの自動変換）では学習しない。
 - 予測は anthy の機能で、前に確定した言葉しか出ない（スマホの IME のような辞書ベースの予測は無い）。
 - 英単語の一覧は 12dicts 6.0.2（Alan Beale）から作った（`data/12dicts-6.0.2/`、作り直しは `npm run words`）。使ったリストは AGID（Kevin Atkinson）に依存しているのでパブリックドメインではなく、AGID・WordNet 1.6・UK Advanced Cryptics Dictionary の著作権表示を残す条件つき（再配布・改変は自由）。全文は `THIRD_PARTY_LICENSES.md`。

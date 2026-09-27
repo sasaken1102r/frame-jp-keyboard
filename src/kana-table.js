@@ -19,7 +19,7 @@ export const KANA_KEYS = Object.freeze({
   ma: { label: 'ま', flick: ['ま', 'み', 'む', 'め', 'も'], toggle: ['ま', 'み', 'む', 'め', 'も'] },
   ya: { label: 'や', flick: ['や', '「', 'ゆ', '」', 'よ'], toggle: ['や', 'ゆ', 'よ', 'ゃ', 'ゅ', 'ょ'] },
   ra: { label: 'ら', flick: ['ら', 'り', 'る', 'れ', 'ろ'], toggle: ['ら', 'り', 'る', 'れ', 'ろ'] },
-  wa: { label: 'わ', flick: ['わ', 'を', 'ん', 'ー', null], toggle: ['わ', 'を', 'ん', 'ゎ', 'ー'] },
+  wa: { label: 'わ', flick: ['わ', 'を', 'ん', 'ー', '～'], toggle: ['わ', 'を', 'ん', 'ゎ', 'ー', '～'] },
   punct: { label: '、。?!', flick: ['、', '。', '？', '！', null], toggle: ['、', '。', '？', '！'] },
 });
 
@@ -30,7 +30,8 @@ export const KANA_KEYS = Object.freeze({
  * @returns {string|null} The character, or null when the key or direction has none
  * @example
  * getFlickChar('ka', 'up') // "く"
- * getFlickChar('wa', 'down') // null
+ * getFlickChar('wa', 'down') // "～"
+ * getFlickChar('punct', 'down') // null
  */
 export const getFlickChar = (keyId, direction) => {
   const key = KANA_KEYS[keyId];

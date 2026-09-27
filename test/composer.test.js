@@ -12,7 +12,8 @@ test('flicks commit kana directly', () => {
   assert.deepEqual(c.input('a', 'left'), [{ text: 'い' }]);
   assert.deepEqual(c.input('a', 'up'), [{ text: 'う' }]);
   assert.equal(c.tail, 'あいう');
-  assert.deepEqual(c.input('wa', 'down'), []);
+  assert.deepEqual(c.input('punct', 'down'), []);
+  assert.deepEqual(c.input('wa', 'down'), [{ text: '～' }]);
 });
 
 test('゛゜小 replaces the previous character', () => {

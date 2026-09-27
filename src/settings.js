@@ -12,11 +12,12 @@ const STORAGE_KEY = 'fjk.settings';
  * @property {boolean} toggleInput - Repeated taps cycle a key's characters
  * @property {number} toggleTimeoutMs - Max gap between taps for toggle input
  * @property {'kana'|'qwerty'} mode - Last used mode (restored on the next start)
- * @property {boolean} conversion - Use IBus/anthy kana-kanji conversion (false = type hiragana directly)
+ * @property {boolean} conversion - Use anthy kana-kanji conversion (false = type hiragana directly)
  * @property {number} liveDelayMs - Quiet time before live candidates are computed while typing
  * @property {boolean} predictions - Also show anthy's predictions (learned history) while typing
  * @property {boolean} suggestions - Show English word suggestions on the QWERTY keyboard
  * @property {boolean} autoCapitalize - Capitalize the first letter after . ! ? and a space, or a new line
+ * @property {boolean} debugRecorders - Log diagnostics (raw input, key gestures, Steam keyboard calls; never text). Takes effect on the next injection.
  */
 
 /** @type {Readonly<Settings>} */
@@ -31,6 +32,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   predictions: true,
   suggestions: true,
   autoCapitalize: true,
+  debugRecorders: false,
 });
 
 /**

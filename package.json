@@ -1,6 +1,6 @@
 {
   "name": "frame-jp-keyboard",
-  "version": "0.5.3",
+  "version": "0.7.0",
   "description": "Japanese flick keyboard overlay for the Steam Frame VR keyboard, injected over CDP",
   "private": true,
   "type": "module",

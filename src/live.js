@@ -1,6 +1,6 @@
 // Live conversion candidates while typing: merging what anthy reports into one ordered list, and
 // the debounce / generation helpers that keep candidate queries from slowing down typing.
-// Pure logic, no IBus objects and no DOM.
+// Pure logic, no DOM.
 
 /**
  * @typedef {'whole'|'segment'|'prediction'|'hiragana'|'katakana'} CandidateKind
@@ -64,7 +64,7 @@ export const mergeCandidates = ({ reading, whole = '', segment = [], predictions
  * @param {number} options.delayMs - Quiet time before running
  * @param {(fn: () => void, ms: number) => unknown} [options.setTimer=setTimeout] - Timer (injectable for tests)
  * @param {(id: unknown) => void} [options.clearTimer=clearTimeout] - Timer cancel
- * @returns {{schedule: (fn: () => void) => void, cancel: () => void, readonly pending: boolean}} The debouncer
+ * @returns {{schedule: (fn: () => void, delay?: number) => void, cancel: () => void, readonly pending: boolean}} The debouncer
  * @example
  * const d = createDebouncer({ delayMs: 150 });
  * d.schedule(() => console.log('quiet'));
@@ -86,16 +86,17 @@ export const createDebouncer = ({ delayMs, setTimer = setTimeout, clearTimer = c
   /**
    * Run fn after the quiet time, replacing any pending call.
    * @param {() => void} fn - Function to run
+   * @param {number} [delay=delayMs] - Quiet time for this call
    * @returns {void}
    * @example
-   * schedule(() => {})
+   * schedule(() => {}, 300)
    */
-  const schedule = (fn) => {
+  const schedule = (fn, delay = delayMs) => {
     cancel();
     id = setTimer(() => {
       id = null;
       fn();
-    }, delayMs);
+    }, delay);
   };
 
   return {

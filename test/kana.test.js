@@ -15,7 +15,7 @@ test('rows follow tap=あ段 left=い up=う right=え down=お', () => {
 
 test('special rows', () => {
   assert.deepEqual(getFlickCandidates('ya'), { center: 'や', left: '「', up: 'ゆ', right: '」', down: 'よ' });
-  assert.deepEqual(getFlickCandidates('wa'), { center: 'わ', left: 'を', up: 'ん', right: 'ー', down: null });
+  assert.deepEqual(getFlickCandidates('wa'), { center: 'わ', left: 'を', up: 'ん', right: 'ー', down: '～' });
   assert.deepEqual(getFlickCandidates('punct'), { center: '、', left: '。', up: '？', right: '！', down: null });
 });
 
