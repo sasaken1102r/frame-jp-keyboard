@@ -52,7 +52,7 @@ export const UPDATE_STRINGS = Object.freeze({
       'install-failed': 'install.sh が失敗しました',
       'bad-args': '前回のインストールのオプションを読めません',
       busy: '別の更新が動いています',
-      'not-newer': 'もう最新の版です',
+      'not-newer': 'もう最新版です',
       'detach-failed': '更新を始められませんでした',
       interrupted: '更新が途中で止まりました',
       io: 'ファイルを書けませんでした',
