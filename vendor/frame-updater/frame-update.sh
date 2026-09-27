@@ -14,7 +14,7 @@
 # stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
 #   C/update-check.json  last answer from GitHub, reused for 24 hours (errors for 1 hour)
 #   C/update-state.json  progress of the last install: running (with step) / done / failed
-#                        (a "done" older than 10 minutes is dropped at the next check or install)
+#                        (a "done" older than 24 hours is dropped at the next check or install)
 #   C/update.log         log of the last install, including install.sh's output
 #   C/update/            work folder (the copy of this script, downloads, the extracted release)
 # install needs a SHA256SUMS file attached to the release and runs the release's install.sh with
@@ -34,8 +34,9 @@ check_ttl=${FRAME_UPDATE_CHECK_TTL:-86400}
 error_ttl=${FRAME_UPDATE_ERROR_TTL:-3600}
 # A detached install that hasn't written its PID after this many seconds never started
 start_grace=60
-# A finished install is news for this long; after that its "done" no longer means "just installed"
-done_ttl=600
+# A finished install's "done" is kept this long. The panels decide themselves whether it is news to them (it
+# is if it came after they started); this only keeps the file from lying around for good
+done_ttl=86400
 nl='
 '
 cr=$(printf '\r')

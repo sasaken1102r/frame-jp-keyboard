@@ -27,11 +27,6 @@ constexpr int kInstallStartTimeoutSeconds = 30;
 constexpr int kStateReadIntervalMs = 500;
 /** A detached install that hasn't written its PID within this many seconds never started. */
 constexpr long long kStartGraceSeconds = 60;
-/**
- * A finished install counts as "installed, reopen to use it" for this long. Later its "done" is old news:
- * the user may have installed another version by hand since (frame-update.sh drops it at the next check).
- */
-constexpr long long kDoneFreshSeconds = 600;
 
 /**
  * Get a value from a parsed JSON object.
@@ -291,6 +286,7 @@ UpdateChecker::UpdateChecker(UpdaterConfig config) : config_(std::move(config)) 
     }
     cacheDir_ += "/" + config_.app;
     status_.current = config_.currentVersion;
+    startedAt_ = static_cast<long long>(std::time(nullptr));
 }
 
 UpdateChecker::~UpdateChecker() {
@@ -437,6 +433,7 @@ bool UpdateChecker::install() {
     args.push_back("--detach");
     args.push_back("install");
     installReply_.clear();
+    installedVersion_.clear();
     if (!spawn(args, installer_)) {
         installReply_ = {{"state", "failed"}, {"error", "spawn-failed"}, {"message", "cannot run " + config_.script}};
         recompute();
@@ -453,6 +450,7 @@ void UpdateChecker::dismiss() {
     ::unlink((cacheDir_ + "/update-state.json").c_str());
     stateFile_.clear();
     installReply_.clear();
+    installedVersion_.clear();
     recompute();
 }
 
@@ -544,10 +542,18 @@ void UpdateChecker::recompute() {
         next.error = "interrupted";
         next.message = "the update was interrupted";
     } else if (state == "done" && compareVersions(version, config_.currentVersion) > 0 &&
-               static_cast<long long>(std::time(nullptr)) - std::atoll(get(stateFile_, "updated_at").c_str()) <=
-                   kDoneFreshSeconds) {
+               std::atoll(get(stateFile_, "updated_at").c_str()) >= startedAt_) {
+        // Installed while this process ran: it still runs the old version until it restarts, however long that
+        // takes. A "done" from before it started is old news (it was restarted, or a version was installed by hand)
+        installedVersion_ = version;
         next.state = UpdateState::Installed;
         next.version = version;
+        next.error.clear();
+        next.message.clear();
+    } else if (!installedVersion_.empty() && state != "failed") {
+        // Seen before; frame-update.sh may have removed the state file since
+        next.state = UpdateState::Installed;
+        next.version = installedVersion_;
         next.error.clear();
         next.message.clear();
     } else if (state == "failed" && (version.empty() || compareVersions(version, config_.currentVersion) > 0)) {

@@ -39,7 +39,7 @@ enum class UpdateState {
     UpToDate,       ///< the running version is the newest release
     Available,      ///< a newer release exists (see UpdateStatus::installable)
     Installing,     ///< an install is running (see UpdateStatus::step)
-    Installed,      ///< an install finished in the last 10 minutes, but this process still runs the old version
+    Installed,      ///< an install finished while this process ran, and it still runs the old version
     CheckFailed,    ///< the last check failed (see UpdateStatus::error)
     InstallFailed,  ///< the last install failed; the current version is unchanged
 };
@@ -100,7 +100,10 @@ public:
      */
     bool install();
 
-    /** Forget a finished or failed install (removes the state file), e.g. when its message is closed. */
+    /**
+     * Forget a finished or failed install (removes the state file), e.g. when its message is closed. Installed
+     * otherwise stays for the life of the process, even after frame-update.sh drops the state file.
+     */
     void dismiss();
 
     /** @return the current status */
@@ -146,6 +149,8 @@ private:
     std::map<std::string, std::string> installReply_; ///< failure printed by "install --detach" itself
     bool installRequested_ = false;                   ///< install() called, "install --detach" still running
     long long installRequestedAt_ = 0;                ///< when (Unix time)
+    long long startedAt_ = 0;                         ///< when this checker was made (Unix time): older "done" is stale
+    std::string installedVersion_;                    ///< Installed seen for this version (until dismiss())
     UpdateStatus status_;
     std::uint64_t revision_ = 0;
 };
