@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createUpdater } from '../src/update.js';
+import { createUpdater, isIndicatorShown } from '../src/update.js';
 
 /**
  * Build an updater with a recording `send` and a change counter, for assertions.
@@ -125,4 +125,10 @@ test('update: a malformed message is ignored rather than throwing', () => {
   assert.doesNotThrow(() => updater.receive(null));
   assert.doesNotThrow(() => updater.receive({ source: 'check' }));
   assert.equal(updater.view.banner, null);
+});
+
+test('update: the indicator is hidden while a kana reading or an English word is being typed', () => {
+  assert.equal(isIndicatorShown({ kanaComposing: false, englishWord: '' }), true);
+  assert.equal(isIndicatorShown({ kanaComposing: true, englishWord: '' }), false);
+  assert.equal(isIndicatorShown({ kanaComposing: false, englishWord: 'helo' }), false);
 });

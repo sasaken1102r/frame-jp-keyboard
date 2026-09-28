@@ -29,6 +29,19 @@ import { UPDATE_STRINGS } from './update-strings.js';
 export const TOAST_MS = 4000;
 
 /**
+ * Whether the update indicator is shown: it steps aside while anything is being typed (a kana
+ * reading or conversion, or an English word), so it never competes with the text in progress.
+ * Only its visibility changes; the badge and banner state stay as they are.
+ * @param {object} typing - What is being typed right now
+ * @param {boolean} typing.kanaComposing - A kana reading or conversion is in progress
+ * @param {string} typing.englishWord - The English word being composed ('' when none)
+ * @returns {boolean} True to show the indicator
+ * @example
+ * isIndicatorShown({ kanaComposing: false, englishWord: 'helo' }) // false
+ */
+export const isIndicatorShown = ({ kanaComposing, englishWord }) => !kanaComposing && !englishWord;
+
+/**
  * Substitute the one %s placeholder used by strings.md-derived text.
  * @param {string} template - Format string with at most one %s
  * @param {string} value - Value to insert

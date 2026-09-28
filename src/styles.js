@@ -9,7 +9,8 @@
 //   key rows: 4 x 56 px with 3 px gaps (every page uses the full height)
 //   kana page: composition panel 336 px | gap 6 px | flick pad 504 px
 //     flick pad columns (weights 1 : 1.35 : 1.35 : 1.35 : 1, 3 px gaps): 80.7 / 109 / 109 / 109 / 80.7 px
-//     composition panel: preedit line 30 px, then the candidate grid (35 px rows, 4 px gaps: 5 rows)
+//     composition panel: preedit line 30 px, the candidate grid (35 px rows, 4 px gaps: 4 rows), then
+//     a 36 px bar with the close button, the update indicator and "Steam ⌨" (32 px tall targets)
 //   QWERTY and numbers: full width 846 px; suggestion strip 36 px + gap 3 px, then 4 key rows of
 //     46.25 px (3 px gaps)
 //   symbols (記号): full width, 4 x 56 px rows (8 symbols per row need the width)
@@ -57,7 +58,7 @@ export const OVERLAY_CSS = `
   font-size: 13px; color: var(--dim); border: 1px solid var(--side-edge);
 }
 .fjk-stock.fjk-pressed { background: var(--pressed); color: var(--text); }
-/* Close-keyboard button: kana panel header (left end) and the English strip (left of Steam). */
+/* Close-keyboard button: kana bar under the candidates (left end) and the English strip (left of Steam). */
 .fjk-close {
   flex: 0 0 44px; width: 44px; height: 30px; display: flex; align-items: center; justify-content: center;
   border-radius: 8px; border: 1px solid var(--side-edge); color: #c7ccd3; background: var(--side);
@@ -78,7 +79,7 @@ export const OVERLAY_CSS = `
 .fjk-cands.fjk-stale .fjk-cand { opacity: 0.4; }
 .fjk-cand.fjk-pressed { background: var(--pressed); }
 .fjk-placeholder {
-  position: absolute; left: 0; right: 0; top: 34px; bottom: 0; display: flex; align-items: center;
+  position: absolute; left: 0; right: 0; top: 34px; bottom: 44px; display: flex; align-items: center;
   justify-content: center; padding: 0 16px; text-align: center; font-size: 14px; color: #6f757c;
   pointer-events: none;
 }
@@ -153,20 +154,42 @@ export const OVERLAY_CSS = `
 .fjk-cell.fjk-empty { opacity: 0.35; }
 .fjk-cell.fjk-active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); transform: scale(1.08); }
 
-/* Update indicator (one in the topline, one in the suggestion strip; see ui.js's renderUpdate) and
-   its banner (checking / confirm / manual / error), floated above the current page. The dot takes
-   over "Steam ⌨"'s margin-left: auto, so it stays right next to it at the right end of the row. */
-.fjk-update {
-  flex: 0 0 14px; width: 14px; height: 14px; border-radius: 50%; align-self: center; cursor: pointer;
-  margin-left: auto; background: rgba(255, 255, 255, 0.14); border: 1px solid var(--side-edge);
+/* Kana page: bar under the candidates with the close button (left), the update indicator and
+   "Steam ⌨" (right). 32 px tall targets, easier to hit with a VR laser than the old inline ones. */
+.fjk-kbar {
+  flex: 0 0 36px; height: 36px; min-height: 0; display: flex; align-items: center; gap: 6px;
+  padding-top: 3px; border-top: 1px solid #33363b;
 }
-.fjk-update + .fjk-stock { margin-left: 0; }
-.fjk-update.fjk-update-badge { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 4px var(--accent); }
+.fjk-kbar-space { flex: 1 1 0; }
+.fjk-kbar .fjk-close { flex: 0 0 52px; width: 52px; height: 32px; }
+.fjk-kbar .fjk-stock {
+  margin-left: 0; height: 32px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px;
+  background: var(--side); color: #c7ccd3; font-size: 14px;
+}
+
+/* Update indicator: a dot inside a tap target, in the kana bar (a 52 px button) and in the
+   suggestion strip (a 24 px slot, only the dot visible); see ui.js's renderUpdate. Hidden while
+   something is being typed (update.js's isIndicatorShown). */
+.fjk-update { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.fjk-update-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14); border: 1px solid var(--side-edge);
+}
+.fjk-update.fjk-update-badge .fjk-update-dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 4px var(--accent); }
+.fjk-kbar .fjk-update {
+  flex: 0 0 52px; height: 32px; border-radius: 8px; border: 1px solid var(--side-edge); background: var(--side);
+}
+.fjk-kbar .fjk-update.fjk-pressed { background: var(--pressed); }
+.fjk-suggest .fjk-update { flex: 0 0 24px; height: 32px; align-self: center; }
+.fjk-suggest .fjk-update.fjk-pressed .fjk-update-dot { background: var(--pressed); }
+/* The banner (checking / confirm / manual / error): just above the kana bar on the kana page,
+   under the strip's right end (where the indicator is) on the full-width pages. */
 .fjk-update-banner {
-  position: absolute; left: 6px; top: 34px; z-index: 5; max-width: 300px;
+  position: absolute; right: 6px; top: 42px; z-index: 5; max-width: 300px;
   padding: 8px 10px; border-radius: 8px; background: #202124; border: 1px solid #3a3d42;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55); font-size: 13px; line-height: 1.35; color: var(--text);
 }
+.fjk-split .fjk-update-banner { right: auto; top: auto; left: 10px; bottom: 48px; }
 .fjk-update-detail { margin-top: 4px; color: var(--dim); font-size: 11px; }
 .fjk-update-actions { display: flex; gap: 6px; margin-top: 6px; }
 .fjk-update-btn {

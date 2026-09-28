@@ -11,7 +11,8 @@
 // Because default panning is off, the candidate panel is scrolled by our own drag handling.
 //
 // Layout: on the kana page the panel is split horizontally, with the composition panel on the left
-// (preedit line, then a wrapping candidate grid that scrolls vertically) and the 12-key flick pad on
+// (preedit line, a wrapping candidate grid that scrolls vertically, then a bar with the close
+// button, the update indicator and "Steam ⌨") and the 12-key flick pad on
 // the right, using the full height. QWERTY, numbers and symbols use the full width; the QWERTY and
 // number pages get a one-row English suggestion strip above the keys.
 import { createCursorTracker } from './cursor-tracker.js';
@@ -19,6 +20,7 @@ import { createInputRecorder } from './input-recorder.js';
 import { getFlickDirection, DIRECTIONS } from './flick.js';
 import { createIcon, hasIcon } from './icons.js';
 import { getFlickCandidates } from './kana-table.js';
+import { isIndicatorShown } from './update.js';
 import { PAGES } from './layout.js';
 import { OVERLAY_CSS } from './styles.js';
 
@@ -170,13 +172,28 @@ export const mountOverlay = (doc, handlers) => {
     button.append(createIcon(doc, 'close'));
     return button;
   };
+  /**
+   * Create the update indicator: a dot inside a tap target (see renderUpdate and styles.js).
+   * @returns {HTMLElement} The indicator
+   * @example
+   * makeUpdateIndicator()
+   */
+  const makeUpdateIndicator = () => {
+    const indicator = el(doc, 'div', 'fjk-update');
+    indicator.title = '更新を確かめる';
+    indicator.append(el(doc, 'span', 'fjk-update-dot'));
+    return indicator;
+  };
+  // Kana page: the reading line shows only the reading; the panel buttons live in a bar below
+  // the candidates (close on the left; the update indicator and "Steam ⌨" on the right).
+  topline.append(preeditEl);
   const closeEl = makeCloseButton();
-  // The update indicator dot sits right before "Steam ⌨" (at the right end), here and in the strip.
-  const updateEl = el(doc, 'div', 'fjk-update');
-  topline.append(closeEl, preeditEl, updateEl, stockEl);
+  const updateEl = makeUpdateIndicator();
+  const kanaBar = el(doc, 'div', 'fjk-kbar');
+  kanaBar.append(closeEl, el(doc, 'div', 'fjk-kbar-space'), updateEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
   const placeholderEl = el(doc, 'div', 'fjk-placeholder');
-  leftEl.append(topline, candsEl, placeholderEl);
+  leftEl.append(topline, candsEl, placeholderEl, kanaBar);
   const rightEl = el(doc, 'div', 'fjk-right');
   const suggestEl = el(doc, 'div', 'fjk-suggest fjk-candbar');
   const suggListEl = el(doc, 'div', 'fjk-sugg-list');
@@ -186,7 +203,7 @@ export const mountOverlay = (doc, handlers) => {
   const suggStockEl = el(doc, 'div', 'fjk-stock', 'Steam ⌨');
   suggStockEl.title = 'Steam の純正キーボードに切り替え';
   const suggCloseEl = makeCloseButton();
-  const suggUpdateEl = el(doc, 'div', 'fjk-update');
+  const suggUpdateEl = makeUpdateIndicator();
   suggestEl.append(compEl, suggListEl, suggCloseEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
@@ -950,6 +967,10 @@ export const mountOverlay = (doc, handlers) => {
     renderEnglish(state.english ?? { text: '', caret: 0 });
     renderUpdate(state.update);
     const composing = view.phase === 'composing' || view.phase === 'converting';
+    // The update indicator steps aside while anything is being typed (its badge state is kept).
+    const indicatorShown = isIndicatorShown({ kanaComposing: composing || view.preedit.length > 0, englishWord: state.english?.text ?? '' });
+    updateEl.hidden = !indicatorShown;
+    suggUpdateEl.hidden = !indicatorShown;
     root.classList.toggle('fjk-composing', composing);
     for (const key of buildPage(state.page).keys) {
       const { def, el: keyEl } = key;
@@ -983,7 +1004,6 @@ export const mountOverlay = (doc, handlers) => {
     renderPreedit(view);
     renderCandidates(view);
     const idle = !composing;
-    stockEl.hidden = !idle;
     placeholderEl.hidden = view.candidates.length > 0;
     placeholderEl.textContent = view.phase === 'direct'
       ? '変換なし（ひらがなを直接入力）'
