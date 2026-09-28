@@ -58,14 +58,13 @@ export const OVERLAY_CSS = `
   font-size: 13px; color: var(--dim); border: 1px solid var(--side-edge);
 }
 .fjk-stock.fjk-pressed { background: var(--pressed); color: var(--text); }
-/* Close-keyboard button: kana bar under the candidates (left end) and the English strip (left of Steam). */
+/* Close-keyboard button: left end of the kana bar and of the English strip. */
 .fjk-close {
   flex: 0 0 44px; width: 44px; height: 30px; display: flex; align-items: center; justify-content: center;
   border-radius: 8px; border: 1px solid var(--side-edge); color: #c7ccd3; background: var(--side);
 }
 .fjk-close .fjk-icon { width: 26px; height: 26px; }
 .fjk-close.fjk-pressed { background: var(--pressed); color: var(--text); }
-.fjk-suggest .fjk-close { align-self: center; height: 32px; }
 .fjk-cands {
   position: relative; flex: 1 1 0; min-height: 0; display: flex; flex-wrap: wrap; align-content: flex-start;
   gap: 4px; overflow: hidden;
@@ -89,7 +88,7 @@ export const OVERLAY_CSS = `
 .fjk-split .fjk-right { flex: 0 0 var(--pad); width: var(--pad); }
 .fjk-pages { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
 
-/* English suggestion strip (QWERTY and number pages). */
+/* Strip above the full-width pages: close | English word and suggestions | update, Steam ⌨. */
 .fjk-suggest {
   flex: 0 0 36px; height: 36px; min-height: 0; display: flex; align-items: stretch; gap: 6px;
   border-bottom: 1px solid #33363b;
@@ -97,13 +96,12 @@ export const OVERLAY_CSS = `
 .fjk-sugg-list { flex: 1 1 0; min-width: 0; display: flex; align-items: stretch; overflow: hidden; }
 .fjk-sugg {
   flex: 1 1 0; min-width: 64px; max-width: 240px; display: flex; align-items: center; justify-content: center;
-  padding: 0 12px; border-radius: 6px; font-size: 21px; color: var(--text); white-space: nowrap; overflow: hidden;
+  padding: 0 8px; border-radius: 6px; font-size: 21px; color: var(--text); white-space: nowrap; overflow: hidden;
 }
 .fjk-sugg + .fjk-sugg { box-shadow: -1px 0 0 #33363b; }
 .fjk-sugg.fjk-sugg-typed { color: var(--dim); font-style: italic; }
 .fjk-sugg.fjk-sugg-correction { color: #c9d7f2; }
 .fjk-sugg.fjk-pressed { background: var(--pressed); }
-.fjk-suggest .fjk-stock { align-self: center; }
 .fjk-sugg.fjk-sugg-comp {
   flex: 0 0 auto; max-width: 45%; justify-content: flex-start; padding: 0 14px; font-size: 22px;
   background: #202124; border-radius: 6px; box-shadow: none;
@@ -155,33 +153,33 @@ export const OVERLAY_CSS = `
 .fjk-cell.fjk-active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); transform: scale(1.08); }
 
 /* Kana page: bar under the candidates with the close button (left), the update indicator and
-   "Steam ⌨" (right). 32 px tall targets, easier to hit with a VR laser than the old inline ones. */
+   "Steam ⌨" (right). */
 .fjk-kbar {
   flex: 0 0 36px; height: 36px; min-height: 0; display: flex; align-items: center; gap: 6px;
   padding-top: 3px; border-top: 1px solid #33363b;
 }
 .fjk-kbar-space { flex: 1 1 0; }
-.fjk-kbar .fjk-close { flex: 0 0 52px; width: 52px; height: 32px; }
-.fjk-kbar .fjk-stock {
-  margin-left: 0; height: 32px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px;
-  background: var(--side); color: #c7ccd3; font-size: 14px;
+/* Panel buttons, identical in the kana bar and the English strip (.fjk-btnrow): 32 px tall
+   targets, easier to hit with a VR laser. */
+.fjk-btnrow .fjk-close { flex: 0 0 52px; width: 52px; height: 32px; align-self: center; }
+.fjk-btnrow .fjk-stock {
+  flex: 0 0 auto; margin-left: 0; height: 32px; align-self: center; display: flex; align-items: center;
+  padding: 0 14px; border-radius: 8px; background: var(--side); color: #c7ccd3; font-size: 14px;
 }
 
-/* Update indicator: a dot inside a tap target, in the kana bar (a 52 px button) and in the
-   suggestion strip (a 24 px slot, only the dot visible); see ui.js's renderUpdate. Hidden while
-   something is being typed (update.js's isIndicatorShown). */
+/* Update indicator: a dot inside a 52 px button, in the kana bar and in the English strip; see
+   ui.js's renderUpdate. Hidden while something is being typed (update.js's isIndicatorShown). */
 .fjk-update { display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .fjk-update-dot {
   width: 14px; height: 14px; border-radius: 50%;
   background: rgba(255, 255, 255, 0.14); border: 1px solid var(--side-edge);
 }
 .fjk-update.fjk-update-badge .fjk-update-dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 4px var(--accent); }
-.fjk-kbar .fjk-update {
-  flex: 0 0 52px; height: 32px; border-radius: 8px; border: 1px solid var(--side-edge); background: var(--side);
+.fjk-btnrow .fjk-update {
+  flex: 0 0 52px; height: 32px; align-self: center; border-radius: 8px; border: 1px solid var(--side-edge);
+  background: var(--side);
 }
-.fjk-kbar .fjk-update.fjk-pressed { background: var(--pressed); }
-.fjk-suggest .fjk-update { flex: 0 0 24px; height: 32px; align-self: center; }
-.fjk-suggest .fjk-update.fjk-pressed .fjk-update-dot { background: var(--pressed); }
+.fjk-btnrow .fjk-update.fjk-pressed { background: var(--pressed); }
 /* The banner (checking / confirm / manual / error): just above the kana bar on the kana page,
    under the strip's right end (where the indicator is) on the full-width pages. */
 .fjk-update-banner {

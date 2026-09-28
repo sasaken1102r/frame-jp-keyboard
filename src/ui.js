@@ -28,8 +28,8 @@ const HOST_ID = 'fjk-host';
 const REPEAT_DELAY_MS = 450;
 const REPEAT_INTERVAL_MS = 70;
 const LONG_PRESS_MS = 550;
-/** English suggestions shown in the strip. */
-const MAX_SUGGESTIONS = 6;
+/** English suggestions shown in the strip (5 fit next to the close and Steam buttons at 854 px). */
+const MAX_SUGGESTIONS = 5;
 /** Movement (CSS px) below which a press on the candidate bar is a tap rather than a scroll. */
 const BAR_TAP_SLOP = 12;
 /** After touchend, wait this long for the pressing laser's release event (it can come just after). */
@@ -189,13 +189,15 @@ export const mountOverlay = (doc, handlers) => {
   topline.append(preeditEl);
   const closeEl = makeCloseButton();
   const updateEl = makeUpdateIndicator();
-  const kanaBar = el(doc, 'div', 'fjk-kbar');
+  const kanaBar = el(doc, 'div', 'fjk-kbar fjk-btnrow');
   kanaBar.append(closeEl, el(doc, 'div', 'fjk-kbar-space'), updateEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
   const placeholderEl = el(doc, 'div', 'fjk-placeholder');
   leftEl.append(topline, candsEl, placeholderEl, kanaBar);
   const rightEl = el(doc, 'div', 'fjk-right');
-  const suggestEl = el(doc, 'div', 'fjk-suggest fjk-candbar');
+  // Full-width pages: close on the left, the English word and suggestions in the middle, the
+  // update indicator and "Steam ⌨" on the right (the same buttons as the kana bar).
+  const suggestEl = el(doc, 'div', 'fjk-suggest fjk-candbar fjk-btnrow');
   const suggListEl = el(doc, 'div', 'fjk-sugg-list');
   // The English word being typed (underlined); tapping it commits it as typed.
   const compEl = el(doc, 'div', 'fjk-sugg fjk-sugg-comp');
@@ -204,7 +206,7 @@ export const mountOverlay = (doc, handlers) => {
   suggStockEl.title = 'Steam の純正キーボードに切り替え';
   const suggCloseEl = makeCloseButton();
   const suggUpdateEl = makeUpdateIndicator();
-  suggestEl.append(compEl, suggListEl, suggCloseEl, suggUpdateEl, suggStockEl);
+  suggestEl.append(suggCloseEl, compEl, suggListEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
   mainEl.append(leftEl, rightEl);
@@ -772,7 +774,6 @@ export const mountOverlay = (doc, handlers) => {
       el(doc, 'span', 'fjk-caret'),
       el(doc, 'span', 'fjk-pre', chars.slice(english.caret).join('')),
     );
-    suggStockEl.hidden = chars.length > 0 || suggListEl.childElementCount > 0;
   };
 
   /**
@@ -855,7 +856,6 @@ export const mountOverlay = (doc, handlers) => {
       item.dataset.index = String(index);
       return item;
     }));
-    suggStockEl.hidden = suggestions.length > 0;
   };
 
   /** Last rendered candidate list, to avoid rebuilding it on every update. */
