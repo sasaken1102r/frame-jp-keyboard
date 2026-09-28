@@ -56,7 +56,7 @@ cd frame-jp-keyboard
 - **点**: 「Steam ⌨」のすぐ左にある点（日本語は候補の下のバー、英語・数字・記号は上の候補の行）。新しい版があると青く光る。入力中は隠れる。
 - **確かめる**: 点をタップすると、その場で GitHub の最新版を確かめる。
 - **更新する**: 新しい版があれば「更新する／やめる」が出る。「更新する」で裏で入れ替わる（サービスが再起動するので、キーボードが一瞬消えることがある）。
-- **自動の確認**: 起動時と 1 時間ごと（GitHub に聞くのは 1 日 1 回まで）。止めるなら `__fjk.settings.updateCheck = false`（点のタップはいつでも使える）。
+- **自動の確認**: 起動時と 1 時間ごと（GitHub に聞くのは 1 日 1 回まで）。止めるなら `__fjk.settings.updateCheck = false; __fjk.setEnabled(true)`（保存されて、次の確認から効く。点のタップはいつでも使える）。
 - **記録**: うまくいかないときは `~/.cache/frame-jp-keyboard/update.log` を見る。
 
 ## 設定
@@ -104,7 +104,7 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 - anthy の学習データは純正キーボード（ibus-anthy）と同じファイルを使う。anthy はロックファイルと差分ファイルで複数のプロセスからの書き込みを扱う作りなので、同時に使っても壊れない。
 - 変換で選んだ候補は anthy が学習する（純正キーボードで変換したときと同じ）。候補を出すための変換（打つたびの自動変換）では学習しない。
 - 予測は anthy の機能で、前に確定した言葉しか出ない（スマホの IME のような辞書ベースの予測は無い）。
-- 更新を確かめるため、サービスが GitHub（`api.github.com`。更新するときは `github.com` とダウンロード先の `githubusercontent.com` も）に接続する。入力した文字などは送らない。入れるのは SHA256SUMS が付いていて、中身のハッシュが合うリリースだけ。
+- 更新を確かめるため、サービスが GitHub（`api.github.com`。更新するときは `github.com` とダウンロード先の `githubusercontent.com` も）に接続する。送るのは接続元の IP アドレスと curl の標準のヘッダだけで、入力した文字や本体・アカウントを識別する情報は送らない（最初の確認は、入れたあとの起動時）。入れるのは SHA256SUMS が付いていて、中身のハッシュが合うリリースだけ。SHA256SUMS は同じリリースに付けたもので、ダウンロードの破損を防ぐためのもの。署名ではないので、作者の GitHub アカウントが乗っ取られた場合までは防げない。更新では、リリースに入っている install.sh を実行する。表示の言語は `~/.steam/registry.vdf` の言語設定を読むだけで、書き換えない。Valve のサービスには接続しない。
 - 英単語の一覧は 12dicts 6.0.2（Alan Beale）から作った（`data/12dicts-6.0.2/`、作り直しは `npm run words`）。使ったリストは AGID（Kevin Atkinson）に依存しているのでパブリックドメインではなく、AGID・WordNet 1.6・UK Advanced Cryptics Dictionary の著作権表示を残す条件つき（再配布・改変は自由）。全文は `THIRD_PARTY_LICENSES.md`。
 
 ## 開発
@@ -118,7 +118,7 @@ npm run package   # テストとビルドのあと、dist/frame-jp-keyboard-<バ
 
 - ビルドは PC（Node.js）で行う。本体では Python 3（aiohttp。SteamOS に入っている）で差し込み役が動くだけ。
 - リリースには、アーカイブと一緒に `dist/SHA256SUMS` も付ける（無いと点からの更新で入れられない）。
-- `vendor/frame-updater/` は、同じ作者の frame-updater リポジトリの写し。手で直さず、あちらの `sync.sh` で取り込み直す（`npm run package` が `MANIFEST.sha256` と照合する）。
+- `vendor/frame-updater/` は、同じ作者の frame-updater リポジトリ（非公開）の写しで、この写し自体は本プロジェクトの MIT ライセンスで配る。`cpp/` は他のアプリ用で、ここでは使わない。手で直さず、あちらの `sync.sh` で取り込み直す（`npm run package` が `MANIFEST.sha256` と照合する）。
 - 開発中に Steam の中身を調べたメモやファイルは `research/`（Steam 内部の調査メモ置き場・非公開）に置く。`.gitignore` で除外していて**コミットしない**。
 
 このプロジェクトは、設計・レビュー・検証・修正を作者（人間）が行い、AI アシスタント（Claude）と一緒に書いて、ユニットテストと実機の Steam Frame で確認しています。

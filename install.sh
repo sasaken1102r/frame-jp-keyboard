@@ -105,7 +105,7 @@ cat <<EOF
 frame-jp-keyboard is installed and injects itself whenever Steam runs.
   Logs:       journalctl --user -u frame-jp-keyboard -f
   Re-inject:  python3 $share_dir/frame_jp_keyboard_injector.py --once
-  Update:     tap the small dot on the keyboard, or set __fjk.settings.updateCheck = false
-              in the CDP console to stop the automatic (startup/hourly) check
+  Update:     tap the small dot on the keyboard. To stop the automatic (startup/hourly) check, run
+              __fjk.settings.updateCheck = false; __fjk.setEnabled(true) in the CDP console
   Uninstall:  $0 --uninstall
 EOF
