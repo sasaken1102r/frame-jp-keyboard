@@ -25,7 +25,7 @@ export const UPDATE_STRINGS = Object.freeze({
   ja: {
     checking: '新しい版を確かめています…',
     installing: '更新中です…',
-    upToDateFormat: '最新です（%s）',
+    upToDateFormat: '最新版です（%s）',
     availableFormat: '新しい版 %s があります',
     confirmFormat: '%s に更新しますか？',
     confirmHint: 'ダウンロードして入れ替えます。途中でこの画面が閉じて開き直すことがあります',
