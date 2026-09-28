@@ -22,10 +22,15 @@ import {
   getKeyboardManagers,
   isOurCall,
 } from './steam.js';
+import { createUpdater } from './update.js';
 import { mountOverlay } from './ui.js';
 
 /* global __FJK_VERSION__ */
 const VERSION = typeof __FJK_VERSION__ === 'string' ? __FJK_VERSION__ : 'dev';
+// Set by the injector right before it evaluates this bundle (see frame_jp_keyboard_injector.py's
+// inject()): Steam's language (~/.steam/registry.vdf, like the other Frame apps), since this
+// keyboard has no language setting of its own.
+const LANG = globalThis.__fjkLang === 'en' ? 'en' : 'ja';
 /** Popup and open/close check. Short, so an English word is committed soon after a close. */
 const TICK_MS = 150;
 const PREREQ_POLL_MS = 1000;
@@ -202,7 +207,10 @@ const install = () => {
         const view = ime.view();
         shownCandidates = view.candidates;
         const shiftShown = autoCapital() ? 'once' : shift.state;
-        overlay?.render({ page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions, english: { text: english.word, caret: english.caret } });
+        overlay?.render({
+          page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions,
+          english: { text: english.word, caret: english.caret }, update: updater.view,
+        });
       } catch (error) {
         warn('render failed', error);
       }
@@ -236,6 +244,25 @@ const install = () => {
   } else {
     log('conversion disabled in settings; typing hiragana directly');
   }
+
+  /**
+   * Ask the injector to do something (forced check, install) over its CDP bridge. The injector adds
+   * this global with Runtime.addBinding; it may be missing on an older injector (fails safe: the
+   * indicator just never hears back, same as any other unreachable-CDP case).
+   * @param {{action: 'check'|'install'}} message - Request
+   * @returns {void}
+   * @example
+   * bridgeSend({ action: 'check' })
+   */
+  const bridgeSend = (message) => {
+    try {
+      if (typeof globalThis.fjkUpdateBridge === 'function') globalThis.fjkUpdateBridge(JSON.stringify(message));
+      else warn('update bridge unavailable (injector too old?)');
+    } catch (error) {
+      warn('update bridge send failed', error);
+    }
+  };
+  const updater = createUpdater({ lang: LANG, send: bridgeSend, onChange: scheduleRender, warn });
 
   /**
    * Turn our overlay on (our keyboard) or off (stock Steam keyboard with a small re-enable button).
@@ -450,6 +477,12 @@ const install = () => {
           onEnable: () => setEnabled(true),
           onRecord: diagnostics ? (w) => log(`rec ${JSON.stringify(w)}`) : undefined,
           onGesture: diagnostics ? (record) => log(`gesture ${JSON.stringify(record)}`) : undefined,
+          onUpdateTap: () => updater.tapIndicator(),
+          onUpdateAction: (action) => {
+            if (action === 'yes') updater.tapConfirmYes();
+            else if (action === 'no') updater.tapConfirmNo();
+            else updater.tapDismiss();
+          },
         });
         overlayDoc = doc;
         overlay.setEnabled(settings.enabled);
@@ -853,6 +886,7 @@ const install = () => {
     settings,
     uninstall,
     debug,
+    updater, // the injector calls updater.receive(message) here (see bridgeSend and update.js)
   };
   globalThis.__fjk = api;
 

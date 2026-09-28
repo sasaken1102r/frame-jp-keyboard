@@ -38,7 +38,7 @@ cd frame-jp-keyboard
 ./install.sh --uninstall  # 外す（そのあと Steam を再起動すると完全に純正に戻る）
 ```
 
-- 置き場所: `~/.local/share/frame-jp-keyboard/`（bundle.js と差し込み役）、`~/.config/systemd/user/frame-jp-keyboard.service`
+- 置き場所: `~/.local/share/frame-jp-keyboard/`（bundle.js と差し込み役、更新用の frame-update.sh）、`~/.config/systemd/user/frame-jp-keyboard.service`、`~/.config/frame-jp-keyboard/install-args`（更新のときに使う）
 - Steam が起動するたびに、サービスが自動で差し込む。
 
 ## 使い方
@@ -50,6 +50,14 @@ cd frame-jp-keyboard
 - **あA**: 日本語 ⇔ 英語。英語では、打っている単語がキーの上に出て、スペース・記号・⏎・候補のタップで確定する。
 - **☺記**: 記号のページ。
 - **純正キーボードに戻す**: あA を長押し（または「Steam ⌨」）。自作に戻すときは右上の「あ」。
+
+## 更新
+
+- **点**: 「Steam ⌨」のすぐ左にある小さな点（かなのページは左上の読みの行、英語・数字・記号のページは上の候補の行）。新しい版があると青く光る。
+- **確かめる**: 点をタップすると、その場で GitHub の最新版を確かめる。
+- **更新する**: 新しい版があれば「更新する／やめる」が出る。「更新する」で裏で入れ替わる（サービスが再起動するので、キーボードが一瞬消えることがある）。
+- **自動の確認**: 起動時と 1 時間ごと（GitHub に聞くのは 1 日 1 回まで）。止めるなら `__fjk.settings.updateCheck = false`（点のタップはいつでも使える）。
+- **記録**: うまくいかないときは `~/.cache/frame-jp-keyboard/update.log` を見る。
 
 ## 設定
 
@@ -63,6 +71,7 @@ __fjk.settings.liveDelayMs = 150;    // 打つ手を止めてから候補を出�
 __fjk.settings.predictions = true;   // 予測（前に確定した言葉）も候補に出す（差し直し後に有効）
 __fjk.settings.suggestions = true;   // 英語の QWERTY で単語の候補を出す
 __fjk.settings.autoCapitalize = true; // 「. 」などのあとの最初の文字を自動で大文字にする
+__fjk.settings.updateCheck = true;   // 起動時と 1 時間ごとに更新を自動で確かめる（点のタップには関係ない）
 __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 ```
 
@@ -95,6 +104,7 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 - anthy の学習データは純正キーボード（ibus-anthy）と同じファイルを使う。anthy はロックファイルと差分ファイルで複数のプロセスからの書き込みを扱う作りなので、同時に使っても壊れない。
 - 変換で選んだ候補は anthy が学習する（純正キーボードで変換したときと同じ）。候補を出すための変換（打つたびの自動変換）では学習しない。
 - 予測は anthy の機能で、前に確定した言葉しか出ない（スマホの IME のような辞書ベースの予測は無い）。
+- 更新を確かめるため、サービスが GitHub（`api.github.com`。更新するときは `github.com` とダウンロード先の `githubusercontent.com` も）に接続する。入力した文字などは送らない。入れるのは SHA256SUMS が付いていて、中身のハッシュが合うリリースだけ。
 - 英単語の一覧は 12dicts 6.0.2（Alan Beale）から作った（`data/12dicts-6.0.2/`、作り直しは `npm run words`）。使ったリストは AGID（Kevin Atkinson）に依存しているのでパブリックドメインではなく、AGID・WordNet 1.6・UK Advanced Cryptics Dictionary の著作権表示を残す条件つき（再配布・改変は自由）。全文は `THIRD_PARTY_LICENSES.md`。
 
 ## 開発
@@ -103,10 +113,12 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 npm install
 npm test          # 単体テスト
 npm run build     # dist/bundle.js を作る
-npm run package   # テストとビルドのあと、dist/frame-jp-keyboard-<バージョン>.tar.gz を作る
+npm run package   # テストとビルドのあと、dist/frame-jp-keyboard-<バージョン>.tar.gz と dist/SHA256SUMS を作る
 ```
 
 - ビルドは PC（Node.js）で行う。本体では Python 3（aiohttp。SteamOS に入っている）で差し込み役が動くだけ。
+- リリースには、アーカイブと一緒に `dist/SHA256SUMS` も付ける（無いと点からの更新で入れられない）。
+- `vendor/frame-updater/` は、同じ作者の frame-updater リポジトリの写し。手で直さず、あちらの `sync.sh` で取り込み直す（`npm run package` が `MANIFEST.sha256` と照合する）。
 - 開発中に Steam の中身を調べたメモやファイルは `research/`（Steam 内部の調査メモ置き場・非公開）に置く。`.gitignore` で除外していて**コミットしない**。
 
 このプロジェクトは、設計・レビュー・検証・修正を作者（人間）が行い、AI アシスタント（Claude）と一緒に書いて、ユニットテストと実機の Steam Frame で確認しています。

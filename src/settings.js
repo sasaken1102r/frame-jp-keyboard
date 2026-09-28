@@ -18,6 +18,9 @@ const STORAGE_KEY = 'fjk.settings';
  * @property {boolean} suggestions - Show English word suggestions on the QWERTY keyboard
  * @property {boolean} autoCapitalize - Capitalize the first letter after . ! ? and a space, or a new line
  * @property {boolean} debugRecorders - Log diagnostics (raw input, key gestures, Steam keyboard calls; never text). Takes effect on the next injection.
+ * @property {boolean} updateCheck - Let the injector check GitHub for a new version at start and hourly
+ *   (frame-update.sh's own cache limits the actual GitHub call to once a day). The indicator's forced
+ *   check (tap) always runs, regardless of this setting; see update.js and README.md.
  */
 
 /** @type {Readonly<Settings>} */
@@ -33,6 +36,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   suggestions: true,
   autoCapitalize: true,
   debugRecorders: false,
+  updateCheck: true,
 });
 
 /**
