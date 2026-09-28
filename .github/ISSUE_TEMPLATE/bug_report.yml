@@ -1,0 +1,58 @@
+name: Bug report / 不具合の報告
+description: Something doesn't work as expected. / 思ったとおりに動かないとき
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! English or Japanese is fine. / 報告ありがとう！英語でも日本語でも大丈夫です。
+        Logs may contain IP addresses on your home network. Feel free to replace them with `x.x.x.x`.
+        ログには家のネットワークの IP アドレスが入ることがあります。気になるときは `x.x.x.x` などに書き換えてください。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 何が起きたか
+      description: What you did, what you expected, and what happened instead (a screenshot helps). / 何をしたら、どうなるはずが、どうなったか（スクリーンショットがあると助かります）
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版
+      description: Run `cat ~/.local/share/frame-jp-keyboard/VERSION` on the Frame. / Frame で `cat ~/.local/share/frame-jp-keyboard/VERSION`
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: screen
+    attributes:
+      label: Where you were typing / どの画面で使っていたか
+      options:
+        - SteamVR keyboard (in the headset) / SteamVR のキーボード（ヘッドセットの中）
+        - Desktop Mode / デスクトップモード
+        - Other / その他
+        - Not sure / わからない
+  - type: dropdown
+    id: part
+    attributes:
+      label: Where it happened / どこで起きたか
+      multiple: true
+      options:
+        - Kana (flick) / かな（フリック）
+        - English (QWERTY) / 英字（QWERTY）
+        - Conversion / 変換
+        - Other / その他
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / ログ
+      description: |
+        Run this on the Frame (Desktop Mode terminal or ssh) soon after the problem, and paste the output.
+        問題が起きたあとすぐに Frame で（デスクトップモードの端末か ssh で）次を実行して、出てきた内容を貼ってください。
+        `journalctl --user -u frame-jp-keyboard --since "1 hour ago" --no-pager`
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else / そのほか
+      description: The app you were typing into, and your settings if you changed any (`__fjk.settings`). / 入力していたアプリ、変えた設定（`__fjk.settings`）など
