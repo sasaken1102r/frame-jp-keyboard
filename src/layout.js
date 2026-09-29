@@ -143,6 +143,16 @@ const fill = (keys, rest) => keys.map((k) => ({ ...k, w: rest / keys.length }));
  */
 const bottomRow = (pageKey) => QWERTY_BOTTOM.map((k) => (k.id === 'num' ? pageKey : k));
 
+/**
+ * Whether a key shows the flick guide while pressed: kana and character keys, and action keys with
+ * an up-flick (← / → for ↑ / ↓).
+ * @param {KeyDef} def - Key definition
+ * @returns {boolean} True when the guide is shown
+ * @example
+ * hasFlickGuide(PAGES.qwerty[3].find((k) => k.id === 'left')) // true
+ */
+export const hasFlickGuide = (def) => def.type === 'kana' || def.type === 'char' || !!def.upAction;
+
 /** Japanese punctuation and brackets (☺記 page 1), 32 keys. */
 export const SYMBOLS_1 = Object.freeze(Array.from('、。，．・：；？！ー〜…「」『』（）【】［］〈〉《》＜＞“”／＼'));
 /** Symbols (☺記 page 2), 32 keys. */

@@ -21,7 +21,7 @@ import { getFlickDirection, DIRECTIONS } from './flick.js';
 import { createIcon, hasIcon } from './icons.js';
 import { getFlickCandidates } from './kana-table.js';
 import { isIndicatorShown } from './update.js';
-import { PAGES } from './layout.js';
+import { PAGES, hasFlickGuide } from './layout.js';
 import { OVERLAY_CSS } from './styles.js';
 
 const HOST_ID = 'fjk-host';
@@ -398,8 +398,8 @@ export const mountOverlay = (doc, handlers) => {
     let candidates;
     if (def.type === 'kana') {
       candidates = getFlickCandidates(def.id);
-    } else if (def.type === 'char') {
-      const main = keyEl.querySelector('.fjk-label')?.textContent ?? def.label;
+    } else if (def.type === 'char' || def.upAction) {
+      const main = keyEl.querySelector('.fjk-label')?.textContent || def.label;
       candidates = { center: main, left: null, up: def.up ?? null, right: null, down: null };
     }
     if (!candidates) return;
@@ -515,11 +515,13 @@ export const mountOverlay = (doc, handlers) => {
     cancelGesture();
     gesture = { ...base, kind: 'key', keyEl, def, barTarget: null, scroll0: 0 };
     keyEl.classList.add('fjk-pressed');
-    if (def.type === 'kana' || def.type === 'char') showGuide(keyEl, def);
+    if (hasFlickGuide(def)) showGuide(keyEl, def);
     const g = gesture;
     if (def.repeat) {
       g.timer = setTimeout(() => {
         g.fired = true;
+        // Held still: auto-repeat takes over (← / →), so its up-flick guide goes away.
+        if (def.upAction) guide.hidden = true;
         handlers.onAction(def.id);
         g.timer = setInterval(() => handlers.onAction(def.id), REPEAT_INTERVAL_MS);
       }, REPEAT_DELAY_MS);
@@ -557,7 +559,7 @@ export const mountOverlay = (doc, handlers) => {
       clearTimeout(gesture.timer);
       gesture.timer = undefined;
     }
-    if (gesture.def.type === 'kana' || gesture.def.type === 'char') highlightGuide(dir);
+    if (hasFlickGuide(gesture.def)) highlightGuide(dir);
   };
 
   /**
@@ -681,7 +683,7 @@ export const mountOverlay = (doc, handlers) => {
       g.endSource = release ? 'release' : g.cursorPoint ? 'stream' : 'touch';
       const p = release ?? g.cursorPoint ?? touchEnd;
       // No live movement from this laser: show what was picked once the release point is known.
-      const blind = release && !g.cursorPoint && g.kind === 'key' && (g.def?.type === 'kana' || g.def?.type === 'char');
+      const blind = release && !g.cursorPoint && g.kind === 'key' && !!g.def && hasFlickGuide(g.def) && !g.fired;
       endGesture(p.x, p.y);
       if (blind) flashGuide(getFlickDirection(p.x - g.x0, p.y - g.y0, handlers.getSettings().flickThreshold));
     };

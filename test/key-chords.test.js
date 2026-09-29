@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { CLIPBOARD_CHORDS, MODIFIER_CODES, createModifiers, keyForChar, keyForName, planChord } from '../src/key-chords.js';
 import { planCalls } from '../src/output-plan.js';
 import { releaseHeldKeys, sendKeyEvents } from '../src/steam.js';
-import { PAGES } from '../src/layout.js';
+import { PAGES, hasFlickGuide } from '../src/layout.js';
 
 test('chords: letters, digits and US punctuation map to their keys', () => {
   assert.deepEqual(keyForChar('a'), { code: 4, shift: false });
@@ -137,4 +137,13 @@ test('layout: the number pages keep ⌫, ⏎ and the bottom row where QWERTY has
     assert.deepEqual(span(nHome, 'tab'), span(home, 'tab'), id);
     assert.deepEqual(nBottom.map((k) => [k.id === 'qwerty' ? 'num' : k.id, k.w]), bottom.map((k) => [k.id, k.w]), id);
   }
+});
+
+test('layout: ← / → show the flick guide like letter keys; other action keys do not', () => {
+  const keys = PAGES.qwerty.flat();
+  const byId = (id) => keys.find((k) => k.id === id);
+  assert.ok(hasFlickGuide(byId('q')));
+  assert.ok(hasFlickGuide(byId('left')));
+  assert.ok(hasFlickGuide(byId('right')));
+  for (const id of ['esc', 'tab', 'ctrl', 'space', 'enter', 'backspace']) assert.equal(hasFlickGuide(byId(id)), false, id);
 });
