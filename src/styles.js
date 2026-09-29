@@ -124,6 +124,8 @@ export const OVERLAY_CSS = `
 .fjk-key.fjk-accent.fjk-pressed { background: #aecbfa; }
 .fjk-key.fjk-on { border-color: var(--accent); color: var(--accent); }
 .fjk-key.fjk-lock { background: #394457; }
+/* An armed one-shot Ctrl / Alt is filled, so it is hard to miss before the next key. */
+.fjk-key.fjk-on[data-fjk-id="ctrl"], .fjk-key.fjk-on[data-fjk-id="alt"] { background: #394457; }
 .fjk-page-kana .fjk-key[data-fjk-id="punct"], .fjk-page-kana .fjk-key[data-fjk-id="modify"] { font-size: 22px; }
 .fjk-page-kana .fjk-key[data-fjk-id="space"], .fjk-page-kana .fjk-key[data-fjk-id="enter"] { font-size: 20px; }
 .fjk-char { font-size: 28px; }
@@ -180,6 +182,13 @@ export const OVERLAY_CSS = `
   background: var(--side);
 }
 .fjk-btnrow .fjk-update.fjk-pressed { background: var(--pressed); }
+/* Cut / copy / paste in the English strip (same look as "Steam ⌨"). */
+.fjk-clips { flex: 0 0 auto; display: flex; gap: 6px; align-self: center; margin-left: 10px; }
+.fjk-clip {
+  height: 32px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px;
+  border: 1px solid var(--side-edge); background: var(--side); color: #c7ccd3; font-size: 14px; cursor: pointer;
+}
+.fjk-clip.fjk-pressed { background: var(--pressed); color: var(--text); }
 /* The banner (checking / confirm / manual / error): just above the kana bar on the kana page,
    under the strip's right end (where the indicator is) on the full-width pages. */
 .fjk-update-banner {

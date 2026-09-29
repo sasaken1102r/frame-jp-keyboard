@@ -12,7 +12,7 @@ import { cycleModifier } from './modifiers.js';
 /**
  * An output operation: either literal text or a special key name understood by
  * VirtualKeyboardManager.HandleVirtualKeyDown ("Backspace", "Enter", "ArrowLeft", "ArrowRight").
- * @typedef {{text: string}|{key: string}} OutputOp
+ * @typedef {{text: string}|{key: string}|{keys: [number, boolean][]}} OutputOp
  */
 
 /**

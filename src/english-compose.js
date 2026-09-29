@@ -118,9 +118,20 @@ export const createEnglishComposition = () => {
     return [{ text: text + suffix }];
   };
 
+  /**
+   * Esc: drop the word without sending anything.
+   * @returns {void}
+   * @example
+   * cancel()
+   */
+  const cancel = () => {
+    take();
+  };
+
   return {
     input,
     backspace,
+    cancel,
     arrow,
     commit,
     commitAs,

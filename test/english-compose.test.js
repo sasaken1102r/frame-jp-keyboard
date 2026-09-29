@@ -72,3 +72,13 @@ test('the apostrophe belongs to the word; other symbols do not', () => {
   assert.equal(isWordChar('a'), true);
   for (const ch of ['.', ',', ' ', '1', '!', '?', '-']) assert.equal(isWordChar(ch), false, ch);
 });
+
+test('english compose: Esc (cancel) drops the word without output', () => {
+  const c = createEnglishComposition();
+  c.input('h');
+  c.input('i');
+  c.cancel();
+  assert.equal(c.word, '');
+  assert.equal(c.caret, 0);
+  assert.deepEqual(c.commit(), []);
+});

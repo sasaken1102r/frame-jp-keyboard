@@ -9,6 +9,7 @@ import { createEnglishComposition, isWordChar } from './english-compose.js';
 import { createAnthyClient } from './anthy-client.js';
 import { installApiRecorder } from './api-recorder.js';
 import { createIme } from './ime.js';
+import { CLIPBOARD_CHORDS, createModifiers, keyForChar, keyForName, planChord } from './key-chords.js';
 import { createKeyboardState } from './keyboard-state.js';
 import { log, warn } from './log.js';
 import { loadSettings, saveSettings } from './settings.js';
@@ -21,6 +22,7 @@ import {
   missingPrerequisites,
   getKeyboardManagers,
   isOurCall,
+  releaseHeldKeys,
 } from './steam.js';
 import { createUpdater } from './update.js';
 import { mountOverlay } from './ui.js';
@@ -64,6 +66,8 @@ const install = () => {
   const settings = loadSettings();
   const pages = createKeyboardState(settings.mode);
   const shift = createShift();
+  /** One-shot Ctrl / Alt of the QWERTY and number pages (key-chords.js). */
+  const modifiers = createModifiers();
   const direct = createComposer(() => settings);
   const compose = createComposer(() => settings);
   const output = createOutput(() => {
@@ -206,10 +210,11 @@ const install = () => {
         suggestions = currentSuggestions();
         const view = ime.view();
         shownCandidates = view.candidates;
-        const shiftShown = autoCapital() ? 'once' : shift.state;
+        const shiftShown = autoCapital() && !modifiers.active ? 'once' : shift.state;
         overlay?.render({
           page: pages.page, mode: pages.mode, shift: shiftShown, view, suggestions,
           english: { text: english.word, caret: english.caret }, update: updater.view,
+          modifiers: { ctrl: modifiers.ctrl, alt: modifiers.alt },
         });
       } catch (error) {
         warn('render failed', error);
@@ -278,6 +283,7 @@ const install = () => {
     if (!settings.enabled) {
       commitEnglish();
       ime.release();
+      modifiers.clear();
     }
     overlay?.setEnabled(settings.enabled);
     scheduleRender();
@@ -294,6 +300,7 @@ const install = () => {
     commitEnglish();
     ime.commitAll();
     shift.reset();
+    modifiers.clear();
     settings.mode = pages.toggleMode();
     saveSettings(settings);
   };
@@ -349,6 +356,75 @@ const install = () => {
   };
 
   /**
+   * Send one key chord (see key-chords.js) after everything typed so far has been committed, so the
+   * chord acts on the text as the user sees it.
+   * @param {{ctrl?: boolean, alt?: boolean, shift?: boolean}} held - Modifiers to hold
+   * @param {{code: number, shift: boolean}} key - The key
+   * @returns {Promise<void>} Resolves when the chord is queued
+   * @example
+   * sendChord({ ctrl: true }, keyForChar('c'))
+   */
+  const sendChord = (held, key) => commitEnglish()
+    .then(() => ime.commitAll())
+    .then(() => {
+      send([{ keys: planChord(held, key) }]);
+    })
+    .catch((error) => warn('key chord failed', error));
+
+  /**
+   * Take the modifiers for the next chord: the armed Ctrl / Alt (disarmed now) and a lit Shift (a
+   * one-shot Shift is used up, a locked one stays).
+   * @returns {{ctrl: boolean, alt: boolean, shift: boolean}} Modifiers to hold
+   * @example
+   * takeHeld()
+   */
+  const takeHeld = () => {
+    const held = { ...modifiers.take(), shift: shift.state !== 'off' };
+    if (shift.state === 'once') shift.reset();
+    return held;
+  };
+
+  /** Action keys that go out as a key (with the armed Ctrl / Alt) instead of their usual meaning. */
+  const CHORD_ACTIONS = Object.freeze({
+    backspace: 'Backspace', enter: 'Enter', space: 'Space', left: 'ArrowLeft', right: 'ArrowRight',
+  });
+
+  /**
+   * Esc, Ctrl, Alt, the clipboard buttons, and other keys while Ctrl / Alt is armed.
+   * @param {string} id - Action id
+   * @returns {boolean} True when handled here
+   * @example
+   * handleChordAction('copy')
+   */
+  const handleChordAction = (id) => {
+    switch (id) {
+      case 'ctrl':
+      case 'alt':
+        modifiers.toggle(id);
+        return true;
+      case 'esc':
+        // Esc first drops an English word being typed; otherwise it goes to the target.
+        if (english.word) {
+          english.cancel();
+          modifiers.clear();
+        } else {
+          sendChord(takeHeld(), keyForName('Escape'));
+        }
+        return true;
+      case 'cut':
+      case 'copy':
+      case 'paste':
+        modifiers.clear();
+        sendChord({ ctrl: true }, keyForChar(CLIPBOARD_CHORDS[id]));
+        return true;
+      default:
+        if (!modifiers.active || !Object.hasOwn(CHORD_ACTIONS, id)) return false;
+        sendChord(takeHeld(), keyForName(CHORD_ACTIONS[id]));
+        return true;
+    }
+  };
+
+  /**
    * Handle an action key.
    * @param {string} id - Action id from the layout
    * @returns {void}
@@ -356,6 +432,12 @@ const install = () => {
    * handleAction('backspace')
    */
   const handleAction = (id) => {
+    if (handleChordAction(id)) {
+      scheduleRender();
+      return;
+    }
+    // Ctrl and Alt only live on the QWERTY and number pages.
+    if (['mode', 'symbols', 'sym1', 'sym2', 'back', 'close', 'stock'].includes(id)) modifiers.clear();
     if (englishPage() && handleEnglishAction(id)) {
       scheduleRender();
       return;
@@ -401,6 +483,20 @@ const install = () => {
    * handleChar(def, 'up')
    */
   const handleChar = (def, direction) => {
+    if (englishPage() && modifiers.active) {
+      // With Ctrl / Alt armed the key goes out as a chord, past the word, suggestions and
+      // auto-capitalization. Shift (tap or lock) is part of the chord too.
+      const ch = direction === 'up' && def.up ? def.up : def.ch;
+      const key = keyForChar(ch);
+      if (key) {
+        sendChord(takeHeld(), key);
+        scheduleRender();
+        return;
+      }
+      // No key types this character (e.g. €): disarm and type it as usual.
+      modifiers.clear();
+      log('ctrl/alt: this character has no key; typed as text');
+    }
     if (englishPage()) {
       const flicked = direction === 'up' && def.up;
       if (def.letter && !flicked) {
@@ -510,6 +606,7 @@ const install = () => {
         // the kana composition is discarded as before.
         commitEnglish();
         ime.release();
+        modifiers.clear();
         overlay?.cancelGesture();
         log('keyboard closed');
       }
@@ -588,6 +685,8 @@ const install = () => {
     apiRecorder?.uninstall();
     apiRecorder = null;
     commitEnglish(); // never drop a word being typed (e.g. when a new build is injected)
+    modifiers.clear();
+    releaseHeldKeys(); // nothing should be held, but never leave a key pressed in the OS
     overlay?.destroy();
     overlay = null;
     ime.release().finally(() => engine?.destroy());

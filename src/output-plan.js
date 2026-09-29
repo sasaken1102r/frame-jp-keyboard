@@ -26,10 +26,12 @@ export const graphemes = (text) => {
 };
 
 /**
- * Plan the HandleVirtualKeyDown calls for output operations.
- * @param {({text: string}|{key: string})[]} ops - Output operations
+ * Plan the HandleVirtualKeyDown calls for output operations. Key chords ({keys}, see key-chords.js)
+ * are not HandleVirtualKeyDown calls; they pass through in order as they are.
+ * @param {({text: string}|{key: string}|{keys: [number, boolean][]})[]} ops - Output operations
  * @param {{buffered: boolean}} mode - Whether the VR keyboard is in buffered mode
- * @returns {string[]} One string per call (key names such as "Backspace" stay as they are)
+ * @returns {(string|{keys: [number, boolean][]})[]} One string per call (key names such as
+ *   "Backspace" stay as they are), and the chords
  * @example
  * planCalls([{ text: 'かんじ' }], { buffered: false }) // ["かんじ"]
  * planCalls([{ text: 'hi' }], { buffered: false }) // ["h", "i"]
@@ -40,6 +42,10 @@ export const planCalls = (ops, { buffered }) => {
   for (const op of ops) {
     if ('key' in op) {
       calls.push(op.key);
+      continue;
+    }
+    if ('keys' in op) {
+      calls.push({ keys: op.keys });
       continue;
     }
     const parts = graphemes(op.text);

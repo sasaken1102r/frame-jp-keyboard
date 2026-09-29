@@ -101,7 +101,7 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {() => {flickThreshold: number}} getSettings - Current settings
  * @property {(keyId: string, direction: string) => void} onKana - A kana key was tapped or flicked
  * @property {(def: KeyDef, direction: string) => void} onChar - A character key was tapped or flicked
- * @property {(actionId: string) => void} onAction - An action key fired (also "stock" from the bar button)
+ * @property {(actionId: string) => void} onAction - An action key fired (also "close", "stock", "cut", "copy" and "paste" from the panel buttons)
  * @property {(index: number) => void} onCandidate - A candidate was tapped
  * @property {(index: number) => void} onSuggestion - An English suggestion was tapped
  * @property {() => void} onEnable - The re-enable button was pressed
@@ -120,6 +120,7 @@ const closest = (target, selector) => (typeof target?.closest === 'function' ? t
  * @property {import('./english.js').Suggestion[]} [suggestions] - English suggestions (QWERTY pages)
  * @property {{text: string, caret: number}} [english] - English word being composed (QWERTY pages)
  * @property {import('./update.js').UpdateView} [update] - Update indicator state (see update.js)
+ * @property {{ctrl: boolean, alt: boolean}} [modifiers] - Armed one-shot Ctrl / Alt (QWERTY and number pages)
  */
 
 /**
@@ -206,7 +207,15 @@ export const mountOverlay = (doc, handlers) => {
   suggStockEl.title = 'Steam の純正キーボードに切り替え';
   const suggCloseEl = makeCloseButton();
   const suggUpdateEl = makeUpdateIndicator();
-  suggestEl.append(suggCloseEl, compEl, suggListEl, suggUpdateEl, suggStockEl);
+  // Cut / copy / paste, shown while no English word is being typed (the word and its suggestions
+  // take the strip then).
+  const clipsEl = el(doc, 'div', 'fjk-clips');
+  for (const [action, label] of [['cut', '切り取り'], ['copy', 'コピー'], ['paste', '貼り付け']]) {
+    const button = el(doc, 'div', 'fjk-clip', label);
+    button.dataset.action = action;
+    clipsEl.append(button);
+  }
+  suggestEl.append(suggCloseEl, clipsEl, compEl, suggListEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
   mainEl.append(leftEl, rightEl);
@@ -481,7 +490,7 @@ export const mountOverlay = (doc, handlers) => {
     if (closest(target, '.fjk-candbar')) {
       cancelGesture();
       const barTarget = closest(target, '.fjk-cand') ?? closest(target, '.fjk-sugg') ?? closest(target, '.fjk-close')
-        ?? closest(target, '.fjk-update') ?? closest(target, '.fjk-stock');
+        ?? closest(target, '.fjk-clip') ?? closest(target, '.fjk-update') ?? closest(target, '.fjk-stock');
       gesture = { ...base, kind: 'bar', keyEl: null, def: null, barTarget, scroll0: candsEl.scrollTop };
       barTarget?.classList.add('fjk-pressed');
       return true;
@@ -564,6 +573,7 @@ export const mountOverlay = (doc, handlers) => {
       if (barTarget.classList.contains('fjk-close')) handlers.onAction('close');
       else if (barTarget.classList.contains('fjk-stock')) handlers.onAction('stock');
       else if (barTarget.classList.contains('fjk-update')) handlers.onUpdateTap();
+      else if (barTarget.classList.contains('fjk-clip')) handlers.onAction(barTarget.dataset.action);
       else if (barTarget.classList.contains('fjk-sugg')) handlers.onSuggestion(Number(barTarget.dataset.index));
       else handlers.onCandidate(Number(barTarget.dataset.index));
       return;
@@ -769,6 +779,7 @@ export const mountOverlay = (doc, handlers) => {
   const renderEnglish = (english) => {
     const chars = Array.from(english.text);
     compEl.hidden = chars.length === 0;
+    clipsEl.hidden = chars.length > 0;
     compEl.replaceChildren(
       el(doc, 'span', 'fjk-pre', chars.slice(0, english.caret).join('')),
       el(doc, 'span', 'fjk-caret'),
@@ -991,6 +1002,10 @@ export const mountOverlay = (doc, handlers) => {
         case 'sym1':
         case 'sym2':
           keyEl.classList.toggle('fjk-on', def.id === state.page);
+          break;
+        case 'ctrl':
+        case 'alt':
+          keyEl.classList.toggle('fjk-on', !!state.modifiers?.[def.id]);
           break;
         case 'shift':
           setLabel(key, shift === 'lock' ? '⇪' : '⇧');

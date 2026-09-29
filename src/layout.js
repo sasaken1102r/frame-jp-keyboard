@@ -1,11 +1,11 @@
 // Key layouts of every page. Pure data. Each row is a list of keys; `w` is the key's width weight
 // inside its row (rows are laid out as flex rows filling the panel width).
 //
-// kana (from the design doc):          qwerty:
-//  ↶    あ    か    さ    ⌫            q w e r t y u i o p      (flick up: 1 2 3 4 5 6 7 8 9 0)
-//  ←    た    な    は    →             a s d f g h j k l       (flick up: @ # $ % & - + ( ))
-//  ☺記  ま    や    ら    空白          ⇧ z x c v b n m ⌫       (flick up: * " ' : ; ! ?)
-//  あA  ゛゜小 わ   、。?! ⏎            あA 123 , ← ␣ → . ⏎
+// kana (from the design doc):          qwerty (like a PC: Esc top left, Ctrl and Alt bottom left):
+//  ↶    あ    か    さ    ⌫            esc q w e r t y u i o p   (flick up: 1 2 3 4 5 6 7 8 9 0)
+//  ←    た    な    は    →                a s d f g h j k l     (flick up: @ # $ % & - + ( ))
+//  ☺記  ま    や    ら    空白          ⇧   z x c v b n m   ⌫   (flick up: * " ' : ; ! ?)
+//  あA  ゛゜小 わ   、。?! ⏎            ctrl alt あA 123 , ← ␣ → . ⏎
 import { KANA_KEYS } from './kana-table.js';
 
 /**
@@ -83,16 +83,18 @@ const letters = (row, ups) => Array.from(row).map((ch, i) => char(ch, { up: ups[
  */
 const chars = (list, extra = {}) => Array.from(list).map((ch) => char(ch, extra));
 
-/** The bottom row shared by the QWERTY, number and symbol pages. */
+/** The bottom row shared by the QWERTY and number pages (Ctrl and Alt at the left, as on a PC). */
 const QWERTY_BOTTOM = Object.freeze([
-  action('mode', 'あA', { w: 1.25, long: 'stock' }),
-  action('num', '123', { w: 1.25 }),
-  char(',', { up: '!' }),
+  action('ctrl', 'ctrl', { w: 0.9 }),
+  action('alt', 'alt', { w: 0.9 }),
+  action('mode', 'あA', { w: 1.1, long: 'stock' }),
+  action('num', '123', { w: 1.1 }),
+  char(',', { up: '!', w: 0.85 }),
   action('left', '←', { w: 0.75, repeat: true }),
-  action('space', 'space', { w: 2.25 }),
+  action('space', 'space', { w: 2 }),
   action('right', '→', { w: 0.75, repeat: true }),
-  char('.', { up: '?' }),
-  action('enter', '⏎', { w: 1.75 }),
+  char('.', { up: '?', w: 0.85 }),
+  action('enter', '⏎', { w: 1.4 }),
 ]);
 
 /**
@@ -100,7 +102,7 @@ const QWERTY_BOTTOM = Object.freeze([
  * @param {KeyDef} pageKey - Key that takes the place of "123"
  * @returns {KeyDef[]} Row
  * @example
- * bottomRow(action('qwerty', 'ABC', { w: 1.25 }))
+ * bottomRow(action('qwerty', 'ABC', { w: 1.1 }))
  */
 const bottomRow = (pageKey) => QWERTY_BOTTOM.map((k) => (k.id === 'num' ? pageKey : k));
 
@@ -140,23 +142,25 @@ export const PAGES = Object.freeze({
     [action('symbols', '☺記'), kana('ma'), kana('ya'), kana('ra'), action('space', '空白')],
     [action('mode', 'あA', { long: 'stock' }), action('modify', '゛゜小', { w: 1.35, side: false }), kana('wa'), kana('punct'), action('enter', '⏎')],
   ],
+  // 11 key widths per row: Esc takes one at the left of the q row, and the rows below keep the
+  // same key size (a sits half a key right of q, z a whole key).
   qwerty: [
-    letters('qwertyuiop', '1234567890'),
-    [spacer(0.5), ...letters('asdfghjkl', '@#$%&-+()'), spacer(0.5)],
-    [action('shift', '⇧', { w: 1.5 }), ...letters('zxcvbnm', '*"\':;!?'), action('backspace', '⌫', { w: 1.5, repeat: true })],
+    [action('esc', 'esc'), ...letters('qwertyuiop', '1234567890')],
+    [spacer(1.5), ...letters('asdfghjkl', '@#$%&-+()'), spacer(0.5)],
+    [action('shift', '⇧', { w: 2 }), ...letters('zxcvbnm', '*"\':;!?'), action('backspace', '⌫', { w: 2, repeat: true })],
     [...QWERTY_BOTTOM],
   ],
   num: [
     chars('1234567890'),
     chars('@#$%&-+()/'),
     [action('num2', '#+=', { w: 1.5 }), ...chars('*"\':;!?'), action('backspace', '⌫', { w: 1.5, repeat: true })],
-    bottomRow(action('qwerty', 'ABC', { w: 1.25 })),
+    bottomRow(action('qwerty', 'ABC', { w: 1.1 })),
   ],
   num2: [
     chars('[]{}#%^*+='),
     chars('_\\|~<>`€£¥'),
     [action('num', '123', { w: 1.5 }), ...chars('.,?!\'/:'), action('backspace', '⌫', { w: 1.5, repeat: true })],
-    bottomRow(action('qwerty', 'ABC', { w: 1.25 })),
+    bottomRow(action('qwerty', 'ABC', { w: 1.1 })),
   ],
   sym1: symbolPage(SYMBOLS_1),
   sym2: symbolPage(SYMBOLS_2),

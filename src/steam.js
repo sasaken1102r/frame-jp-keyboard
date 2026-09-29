@@ -199,6 +199,80 @@ export const enterHookIsForeign = (manager, status) => {
   }
 };
 
+/*
+ * Key chords (Esc, Ctrl+C, Alt+F4, ...; see key-chords.js) cannot go through HandleVirtualKeyDown,
+ * which only takes text and a few key names. They are pressed and released with the same key-state
+ * call Steam's own Paste key uses (SteamClient.Input.ControllerKeyboardSetKeyState), which reaches
+ * the focused window at the OS level and never types anything into a Steam text field.
+ */
+
+/** Keys we pressed and have not released yet; only non-empty while sendKeyEvents runs. */
+const heldKeys = new Set();
+/** The missing key-state call is reported once, not on every chord. */
+let reportedNoKeyState = false;
+
+/**
+ * Steam's key-state call, or null when this Steam client does not have it.
+ * @returns {((code: number, down: boolean) => void)|null} Press (true) or release (false) a key
+ * @example
+ * getSetKeyState()?.(41, true)
+ */
+const getSetKeyState = () => {
+  const input = globalThis.SteamClient?.Input;
+  if (typeof input?.ControllerKeyboardSetKeyState !== 'function') return null;
+  return (code, down) => input.ControllerKeyboardSetKeyState(code, down);
+};
+
+/**
+ * Release every key we still hold (last pressed first). Called after every chord, even a failed
+ * one, and on uninstall, so a modifier can never stay pressed in the OS.
+ * @returns {void}
+ * @example
+ * releaseHeldKeys()
+ */
+export const releaseHeldKeys = () => {
+  if (!heldKeys.size) return;
+  const setKeyState = getSetKeyState();
+  const codes = [...heldKeys].reverse();
+  heldKeys.clear();
+  for (const code of codes) {
+    try {
+      setKeyState?.(code, false);
+    } catch {
+      // Nothing more we can do; the next chord releases again.
+    }
+  }
+};
+
+/**
+ * Press and release keys in order (one chord; see key-chords.js's planChord).
+ * @param {[number, boolean][]} events - [code, down] pairs
+ * @returns {boolean} False when the chord could not be sent (nothing stays pressed either way)
+ * @example
+ * sendKeyEvents([[103, true], [6, true], [6, false], [103, false]]) // Ctrl+C
+ */
+export const sendKeyEvents = (events) => {
+  const setKeyState = getSetKeyState();
+  if (!setKeyState) {
+    if (!reportedNoKeyState) warn('this Steam client has no key-state call; Esc, Ctrl, Alt and copy/paste do nothing');
+    reportedNoKeyState = true;
+    return false;
+  }
+  try {
+    for (const [code, down] of events) {
+      if (down) heldKeys.add(code);
+      setKeyState(code, down);
+      if (!down) heldKeys.delete(code);
+    }
+    return true;
+  } catch (error) {
+    warn('key chord failed', error);
+    return false;
+  } finally {
+    releaseHeldKeys();
+  }
+};
+
 /**
  * Create the output function that delivers operations to the active VirtualKeyboardManager.
  * @param {() => {buffered: boolean, vrStatus?: object}} [getMode] - Reports whether the VR keyboard
@@ -215,7 +289,7 @@ export const createOutput = (getMode = () => ({ buffered: false })) => {
   /**
    * Make the calls for one batch of operations.
    * @param {any} manager - VirtualKeyboardManager
-   * @param {string[]} calls - Strings for HandleVirtualKeyDown
+   * @param {(string|{keys: [number, boolean][]})[]} calls - Strings for HandleVirtualKeyDown, and chords
    * @param {boolean} buffered - Wait for the VR buffer component to re-render between calls
    * @param {object|undefined} vrStatus - VRKeyboardStatus (for the Enter handler check)
    * @returns {Promise<void>} Resolves when all calls are made
@@ -225,6 +299,10 @@ export const createOutput = (getMode = () => ({ buffered: false })) => {
   const deliver = async (manager, calls, buffered, vrStatus) => {
     for (const [i, call] of calls.entries()) {
       if (buffered && i > 0) await sleep(BUFFERED_CALL_GAP_MS);
+      if (typeof call === 'object') {
+        sendKeyEvents(call.keys);
+        continue;
+      }
       sending = true;
       try {
         if (call === 'Enter' && enterHookIsForeign(manager, vrStatus)) {
