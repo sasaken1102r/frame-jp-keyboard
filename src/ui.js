@@ -187,11 +187,32 @@ export const mountOverlay = (doc, handlers) => {
   };
   // Kana page: the reading line shows only the reading; the panel buttons live in a bar below
   // the candidates (close on the left; the update indicator and "Steam ⌨" on the right).
+  /**
+   * Create the cut / copy / paste buttons (they fire the "cut", "copy" and "paste" actions).
+   * @param {boolean} icons - Draw icons (the narrow kana bar) instead of text labels
+   * @returns {HTMLElement} The group
+   * @example
+   * makeClipButtons(true)
+   */
+  const makeClipButtons = (icons) => {
+    const group = el(doc, 'div', 'fjk-clips');
+    for (const [action, label] of [['cut', '切り取り'], ['copy', 'コピー'], ['paste', '貼り付け']]) {
+      const button = el(doc, 'div', icons ? 'fjk-clip fjk-clip-icon' : 'fjk-clip', icons ? undefined : label);
+      if (icons) {
+        button.title = label;
+        button.append(createIcon(doc, action));
+      }
+      button.dataset.action = action;
+      group.append(button);
+    }
+    return group;
+  };
   topline.append(preeditEl);
   const closeEl = makeCloseButton();
   const updateEl = makeUpdateIndicator();
+  const kanaClipsEl = makeClipButtons(true);
   const kanaBar = el(doc, 'div', 'fjk-kbar fjk-btnrow');
-  kanaBar.append(closeEl, el(doc, 'div', 'fjk-kbar-space'), updateEl, stockEl);
+  kanaBar.append(closeEl, kanaClipsEl, el(doc, 'div', 'fjk-kbar-space'), updateEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
   const placeholderEl = el(doc, 'div', 'fjk-placeholder');
   leftEl.append(topline, candsEl, placeholderEl, kanaBar);
@@ -209,12 +230,7 @@ export const mountOverlay = (doc, handlers) => {
   const suggUpdateEl = makeUpdateIndicator();
   // Cut / copy / paste, shown while no English word is being typed (the word and its suggestions
   // take the strip then).
-  const clipsEl = el(doc, 'div', 'fjk-clips');
-  for (const [action, label] of [['cut', '切り取り'], ['copy', 'コピー'], ['paste', '貼り付け']]) {
-    const button = el(doc, 'div', 'fjk-clip', label);
-    button.dataset.action = action;
-    clipsEl.append(button);
-  }
+  const clipsEl = makeClipButtons(false);
   suggestEl.append(suggCloseEl, clipsEl, compEl, suggListEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
@@ -979,7 +995,10 @@ export const mountOverlay = (doc, handlers) => {
     renderUpdate(state.update);
     const composing = view.phase === 'composing' || view.phase === 'converting';
     // The update indicator steps aside while anything is being typed (its badge state is kept).
-    const indicatorShown = isIndicatorShown({ kanaComposing: composing || view.preedit.length > 0, englishWord: state.english?.text ?? '' });
+    const kanaComposing = composing || view.preedit.length > 0;
+    const indicatorShown = isIndicatorShown({ kanaComposing, englishWord: state.english?.text ?? '' });
+    // The kana bar's clipboard buttons step aside while a reading is typed, like the indicator.
+    kanaClipsEl.hidden = kanaComposing;
     updateEl.hidden = !indicatorShown;
     suggUpdateEl.hidden = !indicatorShown;
     root.classList.toggle('fjk-composing', composing);

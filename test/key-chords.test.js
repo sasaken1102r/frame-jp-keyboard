@@ -97,12 +97,38 @@ test('output: without the key-state call a chord is dropped, never typed', () =>
   assert.equal(sendKeyEvents(planChord({ ctrl: true }, keyForChar('v'))), false);
 });
 
-test('layout: QWERTY has Esc top left, Ctrl and Alt bottom left; the number pages share the bottom row', () => {
-  const [top, , , bottom] = PAGES.qwerty;
-  assert.equal(top[0].id, 'esc');
-  assert.deepEqual(bottom.slice(0, 2).map((k) => k.id), ['ctrl', 'alt']);
+test('layout: QWERTY is arranged like a PC keyboard', () => {
+  const [top, home, lower, bottom] = PAGES.qwerty;
+  const ids = (row) => row.map((k) => k.id);
+  assert.deepEqual(ids(top), ['esc', ...'qwertyuiop', 'backspace']);
+  assert.deepEqual(ids(home), ['', ...'asdfghjkl', 'enter']);
+  assert.deepEqual(ids(lower), ['shift', ...'zxcvbnm', ',', '.', 'shift']);
+  assert.deepEqual(ids(bottom), ['ctrl', 'alt', 'num', 'space', 'mode', 'left', 'right']);
+  assert.equal(bottom.find((k) => k.id === 'mode').long, 'stock');
+  // Letters are all the same width, and every row adds up to the same total.
+  assert.ok(PAGES.qwerty.flat().filter((k) => k.letter).every((k) => k.w === 1));
   const width = (row) => row.reduce((sum, k) => sum + k.w, 0);
-  // The three upper rows have the same total width, so their keys are the same size.
-  assert.deepEqual(PAGES.qwerty.slice(0, 3).map(width), [11, 11, 11]);
-  for (const id of ['num', 'num2']) assert.deepEqual(PAGES[id][3].map((k) => k.id), bottom.map((k) => (k.id === 'num' ? 'qwerty' : k.id)));
+  for (const row of PAGES.qwerty) assert.ok(Math.abs(width(row) - width(top)) < 1e-9);
+});
+
+test('layout: the number pages keep ⌫, ⏎ and the bottom row where QWERTY has them', () => {
+  /**
+   * Left edge and width of the key with an id in a row, in key widths.
+   * @param {object[]} row - Row
+   * @param {string} id - Key id
+   * @returns {[number, number]} Start and width
+   * @example
+   * span(row, 'enter')
+   */
+  const span = (row, id) => {
+    const i = row.findIndex((k) => k.id === id);
+    return [row.slice(0, i).reduce((sum, k) => sum + k.w, 0), row[i].w].map((v) => Math.round(v * 1000) / 1000);
+  };
+  const [top, home, , bottom] = PAGES.qwerty;
+  for (const id of ['num', 'num2']) {
+    const [nTop, nHome, , nBottom] = PAGES[id];
+    assert.deepEqual(span(nTop, 'backspace'), span(top, 'backspace'), id);
+    assert.deepEqual(span(nHome, 'enter'), span(home, 'enter'), id);
+    assert.deepEqual(nBottom.map((k) => [k.id === 'qwerty' ? 'num' : k.id, k.w]), bottom.map((k) => [k.id, k.w]), id);
+  }
 });

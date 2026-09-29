@@ -1,11 +1,11 @@
 // Key layouts of every page. Pure data. Each row is a list of keys; `w` is the key's width weight
 // inside its row (rows are laid out as flex rows filling the panel width).
 //
-// kana (from the design doc):          qwerty (like a PC: Esc top left, Ctrl and Alt bottom left):
-//  ↶    あ    か    さ    ⌫            esc q w e r t y u i o p   (flick up: 1 2 3 4 5 6 7 8 9 0)
-//  ←    た    な    は    →                a s d f g h j k l     (flick up: @ # $ % & - + ( ))
-//  ☺記  ま    や    ら    空白          ⇧   z x c v b n m   ⌫   (flick up: * " ' : ; ! ?)
-//  あA  ゛゜小 わ   、。?! ⏎            ctrl alt あA 123 , ← ␣ → . ⏎
+// kana (from the design doc):          qwerty (arranged like a PC keyboard):
+//  ↶    あ    か    さ    ⌫            esc q w e r t y u i o p ⌫    (flick up: 1 2 3 4 5 6 7 8 9 0)
+//  ←    た    な    は    →               a s d f g h j k l  ⏎     (flick up: @ # $ % & - + ( ))
+//  ☺記  ま    や    ら    空白           ⇧  z x c v b n m , .  ⇧   (flick up: * " ' : ; ! ? ! ?)
+//  あA  ゛゜小 わ   、。?! ⏎            ctrl alt 123   space   あA ← →
 import { KANA_KEYS } from './kana-table.js';
 
 /**
@@ -83,26 +83,63 @@ const letters = (row, ups) => Array.from(row).map((ch, i) => char(ch, { up: ups[
  */
 const chars = (list, extra = {}) => Array.from(list).map((ch) => char(ch, extra));
 
-/** The bottom row shared by the QWERTY and number pages (Ctrl and Alt at the left, as on a PC). */
+/*
+ * QWERTY and number pages share one grid: every row adds up to ROW_WIDTH key widths, with ⌫ at the
+ * right end of the top row and ⏎ at the right end of the second, so those keys (and the whole bottom
+ * row) stay put when the page changes. Letters are 1 wide (the q row has 12 keys: esc, 10 letters, ⌫).
+ */
+const ROW_WIDTH = 11.9;
+const ESC_W = 0.8;
+const BACKSPACE_W = 1.1;
+const ENTER_W = 1.6;
+/** Where the a row starts: half a key right of q (esc + 0.5), like a real keyboard. */
+const A_ROW_INDENT = ESC_W + 0.5;
+/** Left ⇧: the z row starts another half key to the right. */
+const SHIFT_W = A_ROW_INDENT + 0.5;
+
+/** The bottom row shared by the QWERTY and number pages (as on a PC: Ctrl and Alt at the left). */
 const QWERTY_BOTTOM = Object.freeze([
-  action('ctrl', 'ctrl', { w: 0.9 }),
-  action('alt', 'alt', { w: 0.9 }),
-  action('mode', 'あA', { w: 1.1, long: 'stock' }),
-  action('num', '123', { w: 1.1 }),
-  char(',', { up: '!', w: 0.85 }),
-  action('left', '←', { w: 0.75, repeat: true }),
-  action('space', 'space', { w: 2 }),
-  action('right', '→', { w: 0.75, repeat: true }),
-  char('.', { up: '?', w: 0.85 }),
-  action('enter', '⏎', { w: 1.4 }),
+  action('ctrl', 'ctrl', { w: 1.2 }),
+  action('alt', 'alt', { w: 1.2 }),
+  action('num', '123', { w: 1.3 }),
+  action('space', 'space', { w: 4.2 }),
+  action('mode', 'あA', { w: 1.4, long: 'stock' }),
+  action('left', '←', { w: 1.3, repeat: true }),
+  action('right', '→', { w: 1.3, repeat: true }),
 ]);
+
+/**
+ * ⌫ for the right end of a top row.
+ * @returns {KeyDef} Key definition
+ * @example
+ * backspaceKey()
+ */
+const backspaceKey = () => action('backspace', '⌫', { w: BACKSPACE_W, repeat: true });
+
+/**
+ * ⏎ for the right end of a second row.
+ * @returns {KeyDef} Key definition
+ * @example
+ * enterKey()
+ */
+const enterKey = () => action('enter', '⏎', { w: ENTER_W });
+
+/**
+ * Give keys equal widths that fill the rest of a row.
+ * @param {KeyDef[]} keys - Keys to size
+ * @param {number} rest - Width left for them
+ * @returns {KeyDef[]} Resized copies
+ * @example
+ * fill(chars('1234567890'), ROW_WIDTH - BACKSPACE_W)
+ */
+const fill = (keys, rest) => keys.map((k) => ({ ...k, w: rest / keys.length }));
 
 /**
  * Copy the shared bottom row, replacing the 123 key.
  * @param {KeyDef} pageKey - Key that takes the place of "123"
  * @returns {KeyDef[]} Row
  * @example
- * bottomRow(action('qwerty', 'ABC', { w: 1.1 }))
+ * bottomRow(action('qwerty', 'ABC', { w: 1.3 }))
  */
 const bottomRow = (pageKey) => QWERTY_BOTTOM.map((k) => (k.id === 'num' ? pageKey : k));
 
@@ -145,22 +182,28 @@ export const PAGES = Object.freeze({
   // 11 key widths per row: Esc takes one at the left of the q row, and the rows below keep the
   // same key size (a sits half a key right of q, z a whole key).
   qwerty: [
-    [action('esc', 'esc'), ...letters('qwertyuiop', '1234567890')],
-    [spacer(1.5), ...letters('asdfghjkl', '@#$%&-+()'), spacer(0.5)],
-    [action('shift', '⇧', { w: 2 }), ...letters('zxcvbnm', '*"\':;!?'), action('backspace', '⌫', { w: 2, repeat: true })],
+    [action('esc', 'esc', { w: ESC_W }), ...letters('qwertyuiop', '1234567890'), backspaceKey()],
+    [spacer(A_ROW_INDENT), ...letters('asdfghjkl', '@#$%&-+()'), enterKey()],
+    [
+      action('shift', '⇧', { w: SHIFT_W }),
+      ...letters('zxcvbnm', '*"\':;!?'),
+      char(',', { up: '!' }),
+      char('.', { up: '?' }),
+      action('shift', '⇧', { w: ROW_WIDTH - SHIFT_W - 9 }),
+    ],
     [...QWERTY_BOTTOM],
   ],
   num: [
-    chars('1234567890'),
-    chars('@#$%&-+()/'),
-    [action('num2', '#+=', { w: 1.5 }), ...chars('*"\':;!?'), action('backspace', '⌫', { w: 1.5, repeat: true })],
-    bottomRow(action('qwerty', 'ABC', { w: 1.1 })),
+    [...fill(chars('1234567890'), ROW_WIDTH - BACKSPACE_W), backspaceKey()],
+    [...fill(chars('@#$%&-+()/'), ROW_WIDTH - ENTER_W), enterKey()],
+    [action('num2', '#+=', { w: SHIFT_W }), ...fill(chars('*"\':;!?,.'), ROW_WIDTH - SHIFT_W)],
+    bottomRow(action('qwerty', 'ABC', { w: 1.3 })),
   ],
   num2: [
-    chars('[]{}#%^*+='),
-    chars('_\\|~<>`€£¥'),
-    [action('num', '123', { w: 1.5 }), ...chars('.,?!\'/:'), action('backspace', '⌫', { w: 1.5, repeat: true })],
-    bottomRow(action('qwerty', 'ABC', { w: 1.1 })),
+    [...fill(chars('[]{}#%^*+='), ROW_WIDTH - BACKSPACE_W), backspaceKey()],
+    [...fill(chars('_\\|~<>`€£¥'), ROW_WIDTH - ENTER_W), enterKey()],
+    [action('num', '123', { w: SHIFT_W }), ...fill(chars('.,?!\'/:'), ROW_WIDTH - SHIFT_W)],
+    bottomRow(action('qwerty', 'ABC', { w: 1.3 })),
   ],
   sym1: symbolPage(SYMBOLS_1),
   sym2: symbolPage(SYMBOLS_2),
