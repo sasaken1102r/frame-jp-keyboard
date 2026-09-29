@@ -306,7 +306,8 @@ const install = () => {
   };
 
   /**
-   * Actions that behave differently while an English word is composed.
+   * Actions that behave differently while an English word is composed (and ↑ / ↓, which only
+   * exist on the English pages).
    * @param {string} id - Action id
    * @returns {boolean} True when handled here
    * @example
@@ -333,6 +334,11 @@ const install = () => {
       case 'enter':
         if (!composing) return false;
         commitEnglish();
+        return true;
+      case 'up':
+      case 'down':
+        // ↑ / ↓ (← / → flicked up): the word is committed first, then the key goes out like ← / →.
+        commitEnglish().then(() => send([{ key: id === 'up' ? 'ArrowUp' : 'ArrowDown' }]));
         return true;
       default:
         return false;
@@ -387,7 +393,10 @@ const install = () => {
   /** Action keys that go out as a key (with the armed Ctrl / Alt) instead of their usual meaning. */
   const CHORD_ACTIONS = Object.freeze({
     backspace: 'Backspace', enter: 'Enter', space: 'Space', left: 'ArrowLeft', right: 'ArrowRight',
+    up: 'ArrowUp', down: 'ArrowDown',
   });
+  /** Arrow actions (← / → and their up-flicks ↑ / ↓). */
+  const ARROWS = Object.freeze(['left', 'right', 'up', 'down']);
 
   /**
    * Esc, Ctrl, Alt, the clipboard buttons, and other keys while Ctrl / Alt is armed.
@@ -411,16 +420,25 @@ const install = () => {
           sendChord(takeHeld(), keyForName('Escape'));
         }
         return true;
+      case 'tab':
+        // Tab always goes out as a key press (with a lit Ctrl / Alt / Shift), after the word.
+        sendChord(takeHeld(), keyForName('Tab'));
+        return true;
       case 'cut':
       case 'copy':
       case 'paste':
         modifiers.clear();
         sendChord({ ctrl: true }, keyForChar(CLIPBOARD_CHORDS[id]));
         return true;
-      default:
-        if (!modifiers.active || !Object.hasOwn(CHORD_ACTIONS, id)) return false;
+      default: {
+        if (!Object.hasOwn(CHORD_ACTIONS, id)) return false;
+        // A lit Shift alone makes the arrows select (Shift+←), as on a PC; not inside a word, where
+        // ← / → move within the word.
+        const shiftArrow = englishPage() && ARROWS.includes(id) && shift.state !== 'off' && !english.word;
+        if (!modifiers.active && !shiftArrow) return false;
         sendChord(takeHeld(), keyForName(CHORD_ACTIONS[id]));
         return true;
+      }
     }
   };
 

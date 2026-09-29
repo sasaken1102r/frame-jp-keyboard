@@ -18,6 +18,9 @@ test('chords: letters, digits and US punctuation map to their keys', () => {
   assert.equal(keyForChar('あ'), null);
   assert.equal(keyForChar('ab'), null);
   assert.deepEqual(keyForName('Escape'), { code: 41, shift: false });
+  assert.deepEqual(keyForName('Tab'), { code: 43, shift: false });
+  assert.deepEqual(keyForName('ArrowUp'), { code: 82, shift: false });
+  assert.deepEqual(keyForName('ArrowDown'), { code: 81, shift: false });
   assert.equal(keyForName('toString'), null);
 });
 
@@ -101,10 +104,12 @@ test('layout: QWERTY is arranged like a PC keyboard', () => {
   const [top, home, lower, bottom] = PAGES.qwerty;
   const ids = (row) => row.map((k) => k.id);
   assert.deepEqual(ids(top), ['esc', ...'qwertyuiop', 'backspace']);
-  assert.deepEqual(ids(home), ['', ...'asdfghjkl', 'enter']);
+  assert.deepEqual(ids(home), ['tab', ...'asdfghjkl', 'enter']);
   assert.deepEqual(ids(lower), ['shift', ...'zxcvbnm', ',', '.', 'shift']);
   assert.deepEqual(ids(bottom), ['ctrl', 'alt', 'num', 'space', 'mode', 'left', 'right']);
   assert.equal(bottom.find((k) => k.id === 'mode').long, 'stock');
+  // ← / → flick up to ↑ / ↓, with the hint shown on the key.
+  assert.deepEqual(bottom.filter((k) => k.upAction).map((k) => [k.id, k.up, k.upAction]), [['left', '↑', 'up'], ['right', '↓', 'down']]);
   // Letters are all the same width, and every row adds up to the same total.
   assert.ok(PAGES.qwerty.flat().filter((k) => k.letter).every((k) => k.w === 1));
   const width = (row) => row.reduce((sum, k) => sum + k.w, 0);
@@ -129,6 +134,7 @@ test('layout: the number pages keep ⌫, ⏎ and the bottom row where QWERTY has
     const [nTop, nHome, , nBottom] = PAGES[id];
     assert.deepEqual(span(nTop, 'backspace'), span(top, 'backspace'), id);
     assert.deepEqual(span(nHome, 'enter'), span(home, 'enter'), id);
+    assert.deepEqual(span(nHome, 'tab'), span(home, 'tab'), id);
     assert.deepEqual(nBottom.map((k) => [k.id === 'qwerty' ? 'num' : k.id, k.w]), bottom.map((k) => [k.id, k.w]), id);
   }
 });

@@ -3,9 +3,9 @@
 //
 // kana (from the design doc):          qwerty (arranged like a PC keyboard):
 //  ↶    あ    か    さ    ⌫            esc q w e r t y u i o p ⌫    (flick up: 1 2 3 4 5 6 7 8 9 0)
-//  ←    た    な    は    →               a s d f g h j k l  ⏎     (flick up: @ # $ % & - + ( ))
+//  ←    た    な    は    →            tab  a s d f g h j k l  ⏎    (flick up: @ # $ % & - + ( ))
 //  ☺記  ま    や    ら    空白           ⇧  z x c v b n m , .  ⇧   (flick up: * " ' : ; ! ? ! ?)
-//  あA  ゛゜小 わ   、。?! ⏎            ctrl alt 123   space   あA ← →
+//  あA  ゛゜小 わ   、。?! ⏎            ctrl alt 123   space   あA ← →   (flick up: ↑ ↓)
 import { KANA_KEYS } from './kana-table.js';
 
 /**
@@ -20,6 +20,7 @@ import { KANA_KEYS } from './kana-table.js';
  * @property {boolean} [symbol] - Char key on a symbol page (styled smaller)
  * @property {boolean} [repeat] - Auto-repeat while held
  * @property {string} [long] - Action fired by a long press instead of the tap action
+ * @property {string} [upAction] - Action fired by flicking an action key up (its hint is `up`)
  * @property {boolean} [side] - Styled as a function key
  */
 
@@ -55,15 +56,6 @@ const action = (id, label, extra = {}) => ({ type: 'action', id, label, w: 1, si
 const char = (ch, extra = {}) => ({ type: 'char', id: ch, ch, label: ch, w: 1, ...extra });
 
 /**
- * Build an empty spacer.
- * @param {number} w - Width weight
- * @returns {KeyDef} Spacer definition
- * @example
- * spacer(0.5)
- */
-const spacer = (w) => ({ type: 'spacer', id: '', label: '', w });
-
-/**
  * Build a row of letter keys with flick-up characters.
  * @param {string} row - Letters of the row
  * @param {string} ups - Flick-up characters, one per letter
@@ -92,7 +84,7 @@ const ROW_WIDTH = 11.9;
 const ESC_W = 0.8;
 const BACKSPACE_W = 1.1;
 const ENTER_W = 1.6;
-/** Where the a row starts: half a key right of q (esc + 0.5), like a real keyboard. */
+/** Where the a row starts: half a key right of q (esc + 0.5), like a real keyboard. Tab fills it. */
 const A_ROW_INDENT = ESC_W + 0.5;
 /** Left ⇧: the z row starts another half key to the right. */
 const SHIFT_W = A_ROW_INDENT + 0.5;
@@ -104,8 +96,8 @@ const QWERTY_BOTTOM = Object.freeze([
   action('num', '123', { w: 1.3 }),
   action('space', 'space', { w: 4.2 }),
   action('mode', 'あA', { w: 1.4, long: 'stock' }),
-  action('left', '←', { w: 1.3, repeat: true }),
-  action('right', '→', { w: 1.3, repeat: true }),
+  action('left', '←', { w: 1.3, repeat: true, up: '↑', upAction: 'up' }),
+  action('right', '→', { w: 1.3, repeat: true, up: '↓', upAction: 'down' }),
 ]);
 
 /**
@@ -115,6 +107,14 @@ const QWERTY_BOTTOM = Object.freeze([
  * backspaceKey()
  */
 const backspaceKey = () => action('backspace', '⌫', { w: BACKSPACE_W, repeat: true });
+
+/**
+ * Tab at the left of a second row, like a PC keyboard.
+ * @returns {KeyDef} Key definition
+ * @example
+ * tabKey()
+ */
+const tabKey = () => action('tab', 'tab', { w: A_ROW_INDENT });
 
 /**
  * ⏎ for the right end of a second row.
@@ -183,7 +183,7 @@ export const PAGES = Object.freeze({
   // same key size (a sits half a key right of q, z a whole key).
   qwerty: [
     [action('esc', 'esc', { w: ESC_W }), ...letters('qwertyuiop', '1234567890'), backspaceKey()],
-    [spacer(A_ROW_INDENT), ...letters('asdfghjkl', '@#$%&-+()'), enterKey()],
+    [tabKey(), ...letters('asdfghjkl', '@#$%&-+()'), enterKey()],
     [
       action('shift', '⇧', { w: SHIFT_W }),
       ...letters('zxcvbnm', '*"\':;!?'),
@@ -195,13 +195,13 @@ export const PAGES = Object.freeze({
   ],
   num: [
     [...fill(chars('1234567890'), ROW_WIDTH - BACKSPACE_W), backspaceKey()],
-    [...fill(chars('@#$%&-+()/'), ROW_WIDTH - ENTER_W), enterKey()],
+    [tabKey(), ...fill(chars('@#$%&-+()/'), ROW_WIDTH - A_ROW_INDENT - ENTER_W), enterKey()],
     [action('num2', '#+=', { w: SHIFT_W }), ...fill(chars('*"\':;!?,.'), ROW_WIDTH - SHIFT_W)],
     bottomRow(action('qwerty', 'ABC', { w: 1.3 })),
   ],
   num2: [
     [...fill(chars('[]{}#%^*+='), ROW_WIDTH - BACKSPACE_W), backspaceKey()],
-    [...fill(chars('_\\|~<>`€£¥'), ROW_WIDTH - ENTER_W), enterKey()],
+    [tabKey(), ...fill(chars('_\\|~<>`€£¥'), ROW_WIDTH - A_ROW_INDENT - ENTER_W), enterKey()],
     [action('num', '123', { w: SHIFT_W }), ...fill(chars('.,?!\'/:'), ROW_WIDTH - SHIFT_W)],
     bottomRow(action('qwerty', 'ABC', { w: 1.3 })),
   ],

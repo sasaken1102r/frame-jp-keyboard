@@ -188,20 +188,18 @@ export const mountOverlay = (doc, handlers) => {
   // Kana page: the reading line shows only the reading; the panel buttons live in a bar below
   // the candidates (close on the left; the update indicator and "Steam ⌨" on the right).
   /**
-   * Create the cut / copy / paste buttons (they fire the "cut", "copy" and "paste" actions).
-   * @param {boolean} icons - Draw icons (the narrow kana bar) instead of text labels
+   * Create the cut / copy / paste icon buttons (they fire the "cut", "copy" and "paste" actions).
    * @returns {HTMLElement} The group
    * @example
-   * makeClipButtons(true)
+   * makeClipButtons()
    */
-  const makeClipButtons = (icons) => {
+  const makeClipButtons = () => {
     const group = el(doc, 'div', 'fjk-clips');
     for (const [action, label] of [['cut', '切り取り'], ['copy', 'コピー'], ['paste', '貼り付け']]) {
-      const button = el(doc, 'div', icons ? 'fjk-clip fjk-clip-icon' : 'fjk-clip', icons ? undefined : label);
-      if (icons) {
-        button.title = label;
-        button.append(createIcon(doc, action));
-      }
+      const button = el(doc, 'div', 'fjk-clip');
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.append(createIcon(doc, action));
       button.dataset.action = action;
       group.append(button);
     }
@@ -210,7 +208,7 @@ export const mountOverlay = (doc, handlers) => {
   topline.append(preeditEl);
   const closeEl = makeCloseButton();
   const updateEl = makeUpdateIndicator();
-  const kanaClipsEl = makeClipButtons(true);
+  const kanaClipsEl = makeClipButtons();
   const kanaBar = el(doc, 'div', 'fjk-kbar fjk-btnrow');
   kanaBar.append(closeEl, kanaClipsEl, el(doc, 'div', 'fjk-kbar-space'), updateEl, stockEl);
   const candsEl = el(doc, 'div', 'fjk-cands');
@@ -230,7 +228,7 @@ export const mountOverlay = (doc, handlers) => {
   const suggUpdateEl = makeUpdateIndicator();
   // Cut / copy / paste, shown while no English word is being typed (the word and its suggestions
   // take the strip then).
-  const clipsEl = makeClipButtons(false);
+  const clipsEl = makeClipButtons();
   suggestEl.append(suggCloseEl, clipsEl, compEl, suggListEl, suggUpdateEl, suggStockEl);
   const pagesEl = el(doc, 'div', 'fjk-pages');
   rightEl.append(suggestEl, pagesEl);
@@ -554,6 +552,11 @@ export const mountOverlay = (doc, handlers) => {
     const dir = getFlickDirection(x - gesture.x0, y - gesture.y0, handlers.getSettings().flickThreshold);
     if (dir === gesture.dir) return;
     gesture.dir = dir;
+    // A key with an up-flick (← / →) stops waiting to auto-repeat once the laser moves off it.
+    if (gesture.def.upAction && dir !== 'center' && !gesture.fired) {
+      clearTimeout(gesture.timer);
+      gesture.timer = undefined;
+    }
     if (gesture.def.type === 'kana' || gesture.def.type === 'char') highlightGuide(dir);
   };
 
@@ -601,6 +604,8 @@ export const mountOverlay = (doc, handlers) => {
     } else if (def.type === 'char') {
       // Only "up" means something on character keys; other directions count as a tap.
       handlers.onChar(def, dir === 'up' && def.up ? 'up' : 'center');
+    } else if (def.upAction && getFlickDirection(x - x0, y - y0, threshold) === 'up') {
+      handlers.onAction(def.upAction);
     } else if (getFlickDirection(x - x0, y - y0, threshold * 2) === 'center') {
       // Action keys fire on release unless the laser clearly slid away (twice the flick threshold).
       handlers.onAction(def.id);

@@ -182,18 +182,18 @@ export const OVERLAY_CSS = `
   background: var(--side);
 }
 .fjk-btnrow .fjk-update.fjk-pressed { background: var(--pressed); }
-/* Cut / copy / paste in the English strip (same look as "Steam ⌨"). */
+/* Cut / copy / paste icon buttons: 52 px in the English strip, 42 px in the kana bar (below). */
 .fjk-clips { flex: 0 0 auto; display: flex; gap: 6px; align-self: center; margin-left: 10px; }
 .fjk-clip {
-  height: 32px; display: flex; align-items: center; padding: 0 14px; border-radius: 8px;
+  width: 52px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px;
   border: 1px solid var(--side-edge); background: var(--side); color: #c7ccd3; font-size: 14px; cursor: pointer;
 }
 .fjk-clip.fjk-pressed { background: var(--pressed); color: var(--text); }
 /* The kana bar is narrow (326 px inside): icon buttons, 42 px wide, and slightly smaller neighbours. */
 .fjk-kbar { gap: 4px; }
 .fjk-kbar .fjk-clips { margin-left: 4px; gap: 4px; }
-.fjk-clip.fjk-clip-icon { width: 42px; padding: 0; justify-content: center; }
-.fjk-clip-icon .fjk-icon { width: 22px; height: 22px; }
+.fjk-clip .fjk-icon { width: 22px; height: 22px; }
+.fjk-kbar .fjk-clip { width: 42px; }
 .fjk-kbar .fjk-close, .fjk-kbar .fjk-update { flex: 0 0 44px; width: 44px; }
 .fjk-kbar .fjk-stock { padding: 0 9px; font-size: 13px; }
 /* The banner (checking / confirm / manual / error): just above the kana bar on the kana page,
