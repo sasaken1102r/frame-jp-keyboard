@@ -20,7 +20,7 @@ body:
     attributes:
       label: Version / 版
       description: Run `cat ~/.local/share/frame-jp-keyboard/VERSION` on the Frame. / Frame で `cat ~/.local/share/frame-jp-keyboard/VERSION`
-      placeholder: "0.8.0"
+      placeholder: "0.9.0"
     validations:
       required: true
   - type: dropdown

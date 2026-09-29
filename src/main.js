@@ -432,9 +432,9 @@ const install = () => {
         return true;
       default: {
         if (!Object.hasOwn(CHORD_ACTIONS, id)) return false;
-        // A lit Shift alone makes the arrows select (Shift+←), as on a PC; not inside a word, where
-        // ← / → move within the word.
-        const shiftArrow = englishPage() && ARROWS.includes(id) && shift.state !== 'off' && !english.word;
+        // A one-shot Shift alone makes the arrows select (Shift+←), as on a PC; not inside a word, where
+        // ← / → move within the word, and not with Caps (a locked Shift), which doesn't select on a PC.
+        const shiftArrow = englishPage() && ARROWS.includes(id) && shift.state === 'once' && !english.word;
         if (!modifiers.active && !shiftArrow) return false;
         sendChord(takeHeld(), keyForName(CHORD_ACTIONS[id]));
         return true;

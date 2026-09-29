@@ -217,7 +217,10 @@ export const installApiRecorder = ({ getManagers, isOurs, onCall, extra = () => 
 
   refresh();
   wrap(client?.Input, 'ControllerKeyboardSendText', 'Input.ControllerKeyboardSendText');
-  wrap(client?.Input, 'ControllerKeyboardSetKeyState', 'Input.ControllerKeyboardSetKeyState');
+  // Only whether a modifier or another key moved, never which key (the log must not reveal typing).
+  wrap(client?.Input, 'ControllerKeyboardSetKeyState', 'Input.ControllerKeyboardSetKeyState', {
+    mapArgs: ([code, down]) => [Number(code) >= 100 && Number(code) <= 103 ? 'mod' : 'key', !!down],
+  });
   wrap(client?.Input, 'SetGamepadKeyboardText', 'Input.SetGamepadKeyboardText');
   wrap(client?.OpenVR?.Keyboard, 'SendText', 'OpenVR.Keyboard.SendText');
   wrap(client?.Browser, 'Paste', 'Browser.Paste');
