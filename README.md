@@ -29,6 +29,24 @@ Steam Frame の VR キーボードに、スマホでおなじみの**12 キー�
 
 ## インストール／アンインストール（Frame 本体）
 
+### いちばんかんたん：Frame の中だけで入れる（おすすめ）
+
+PC は要りません。Frame の Konsole（画面下のバーの ＋ →「プログラムを起動」→ Konsole）で次のコマンドを入力して Enter を押し、メニューで **2**（frame-jp-keyboard）を選びます。
+
+```sh
+curl -fsSL https://frame.sasaken1102s.net | sh
+```
+
+- 最初の 1 回だけ、Steam 設定 → システム →「開発者モードを有効化」をオンにしておきます（オフだと ＋ の一覧に Konsole が出ません）
+- ほかのアプリ（frameeyeosc・frame-mic-tuner・frame-perf-overlay）も同じメニューから一緒に入れられます
+- 更新は、同じコマンドで同じ番号を選ぶだけ。アンインストールはメニューの `u` から
+- くわしい手順と動画：https://frame.sasaken1102s.net
+- 質問なしで入れるなら `curl -fsSL https://frame.sasaken1102s.net | sh -s -- install keyboard`
+
+入るもの・オプションは、下の「PC から入れる」と同じです（中で `install.sh` を実行しています）。
+
+### PC から入れる
+
 リリースの `frame-jp-keyboard-<バージョン>.tar.gz` を本体にコピーして、本体の上で:
 
 ```sh
