@@ -23,6 +23,7 @@ import { getFlickCandidates } from './kana-table.js';
 import { isIndicatorShown } from './update.js';
 import { PAGES, hasFlickGuide } from './layout.js';
 import { OVERLAY_CSS } from './styles.js';
+import { createStockGuard } from './stock-guard.js';
 
 const HOST_ID = 'fjk-host';
 const REPEAT_DELAY_MS = 450;
@@ -1067,8 +1068,11 @@ export const mountOverlay = (doc, handlers) => {
       : `${base}right:0;top:0;width:48px;height:30px;`;
     root.hidden = !enabled;
     reenable.hidden = enabled;
+    stockGuard.setActive(enabled);
   };
 
+  // Controller buttons and a grown stock panel must not reach or show the stock keyboard under ours.
+  const stockGuard = createStockGuard(doc);
   applyHostStyle();
   (doc.body ?? doc.documentElement).append(host);
 
@@ -1115,6 +1119,7 @@ export const mountOverlay = (doc, handlers) => {
     }
     cursorHandle = null;
     if (recorder) for (const type of recordTypes) doc.removeEventListener(type, recordEvent, { capture: true });
+    stockGuard.destroy();
     host.remove();
   };
 
@@ -1168,11 +1173,14 @@ export const mountOverlay = (doc, handlers) => {
 
   /**
    * Recent key gestures and the cursor state (debug; numbers only).
-   * @returns {{registered: boolean, scale: number|null, dpr: number, cursors: object[], gestures: object[]}} Info
+   * @returns {{registered: boolean, scale: number|null, dpr: number, cursors: object[], gestures: object[], stockGuard: {active: boolean, swallowed: number}}} Info
    * @example
    * gestures().gestures.at(-1).cursor
    */
-  const gestures = () => ({ registered: !!cursorHandle, scale: tracker.scale, dpr, cursors: tracker.snapshot(), gestures: [...gestureLog] });
+  const gestures = () => ({
+    registered: !!cursorHandle, scale: tracker.scale, dpr, cursors: tracker.snapshot(), gestures: [...gestureLog],
+    stockGuard: stockGuard.stats(),
+  });
 
   return { host, setEnabled, setBounds, render, cancelGesture, measure, preeditText, gestures, destroy };
 };
