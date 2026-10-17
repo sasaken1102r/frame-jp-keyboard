@@ -7,6 +7,8 @@ const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url
 await build({
   entryPoints: ['src/main.js'],
   bundle: true,
+  // Only local identifiers are shortened; property names used by Steam and the injector stay intact.
+  minify: !process.argv.includes('--debug'),
   format: 'iife',
   target: 'chrome126',
   outfile: 'dist/bundle.js',

@@ -131,7 +131,8 @@ __fjk.setEnabled(true);              // 自作キーボードのオン／オフ
 ```sh
 npm install
 npm test          # 単体テスト
-npm run build     # dist/bundle.js を作る
+npm run build     # dist/bundle.js を作る（配布用に圧縮）
+npm run build -- --debug  # 調査用: 読みやすい未圧縮の bundle.js を作る
 npm run package   # テストとビルドのあと、dist/frame-jp-keyboard-<バージョン>.tar.gz と dist/SHA256SUMS を作る
 ```
 

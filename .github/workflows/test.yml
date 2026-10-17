@@ -1,0 +1,54 @@
+name: Test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Compare English suggestions with the original module
+        type: boolean
+        default: false
+      baseline_ref:
+        description: Original source revision for the optional benchmark
+        default: f15959257a053eb21bac053c61e36806169beb6d
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run package
+      - name: Benchmark corrections
+        if: github.event_name == 'workflow_dispatch' && inputs.benchmark
+        env:
+          BASE_REF: ${{ inputs.baseline_ref }}
+        run: |
+          mkdir "$RUNNER_TEMP/original-keyboard"
+          git archive "$BASE_REF" | tar -x -C "$RUNNER_TEMP/original-keyboard"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$RUNNER_TEMP/original-keyboard/node_modules"
+          (cd "$RUNNER_TEMP/original-keyboard" && npm run package) > dist/original-build.log 2>&1
+          cp "$RUNNER_TEMP/original-keyboard/dist/bundle.js" dist/original-bundle.js
+          cp "$RUNNER_TEMP/original-keyboard/dist/"*.tar.gz dist/original-package.tar.gz
+          cp "$RUNNER_TEMP/original-keyboard/src/english.js" "$RUNNER_TEMP/baseline-english.mjs"
+          node tools/benchmark-english.js "$RUNNER_TEMP/baseline-english.mjs" > dist/english-benchmark.json
+      - name: Record sizes
+        run: |
+          wc -c dist/bundle.js dist/frame-jp-keyboard-*.tar.gz > dist/sizes.txt
+          git rev-parse HEAD > dist/source-commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.os }}
+          path: dist/
+          retention-days: 14

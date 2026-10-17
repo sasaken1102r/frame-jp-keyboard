@@ -148,3 +148,66 @@ test('replace sends exactly count backspaces even after the composer forgot its 
   assert.deepEqual(c.replace(2, 'ok '), [{ key: 'Backspace' }, { key: 'Backspace' }, { text: 'ok ' }]);
   assert.deepEqual(c.replace(0, 'a'), [{ text: 'a' }]);
 });
+
+// The former Set-based search is an independent reference for preserving full candidate order,
+// including duplicates produced by different edits and case-insensitive dictionary entries.
+const referenceEdits1 = (word) => {
+  const result = new Set();
+  for (let i = 0; i <= word.length; i += 1) {
+    const left = word.slice(0, i);
+    const right = word.slice(i);
+    if (right) result.add(left + right.slice(1));
+    if (right.length > 1) result.add(left + right[1] + right[0] + right.slice(2));
+    for (const c of "abcdefghijklmnopqrstuvwxyz'") {
+      if (right) result.add(left + c + right.slice(1));
+      result.add(left + c + right);
+    }
+  }
+  result.delete(word);
+  return result;
+};
+
+const referenceCorrections = (dict, word) => {
+  const one = scoredEdits1(word);
+  const result = [];
+  for (const [candidate, cost] of one) {
+    const entry = dict.byLower.get(candidate);
+    if (entry) result.push({ entry, score: Math.log2(entry.rank + 2) + cost * 2 });
+  }
+  if (result.length === 0 && word.length >= 3 && word.length <= 10) {
+    const seen = new Set();
+    for (const first of one.keys()) {
+      for (const second of referenceEdits1(first)) {
+        const entry = dict.byLower.get(second);
+        if (entry && second !== word && !seen.has(second)) {
+          seen.add(second);
+          result.push({ entry, score: Math.log2(entry.rank + 2) + 8 });
+        }
+      }
+    }
+  }
+  return result.sort((a, b) => a.score - b.score).map((candidate) => candidate.entry);
+};
+
+test('streamed second edits preserve the reference candidate list and ordering', () => {
+  let seed = 0x12438675;
+  const random = (max) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return Math.floor(seed / 0x100000000 * max);
+  };
+  const alphabet = "abc'";
+  const words = Array.from({ length: 64 }, (_, index) => {
+    let word = '';
+    for (let n = 2 + random(5); n > 0; n -= 1) word += alphabet[random(alphabet.length)];
+    return index % 7 === 0 ? word.toUpperCase() : word;
+  });
+  const small = createDictionary(words);
+  const inputs = ['', 'a', 'ab', 'aaa', "ab'c", 'zzzzzzzzzz', 'zzzzzzzzzzz', ...words.slice(0, 16)];
+  for (const word of inputs) {
+    assert.deepEqual([...edits1(word)], [...referenceEdits1(word)], word);
+    assert.deepEqual(correctionsFor(small, word), referenceCorrections(small, word), word);
+  }
+  for (const word of ['reciev', 'helo', 'xylophne', 'qzxwv', "don''t", 'keyboadr']) {
+    assert.deepEqual(correctionsFor(real, word), referenceCorrections(real, word), word);
+  }
+});

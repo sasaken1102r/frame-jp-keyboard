@@ -71,6 +71,26 @@ const lowerBound = (sorted, key) => {
 };
 
 /**
+ * Visit single edits in generation order without collecting the non-words. Repeated strings and
+ * the input itself can occur; callers decide which candidates they need to retain.
+ * @param {string} word - Lower-case word
+ * @param {(candidate: string) => void} visit - Receives each generated edit
+ * @returns {void}
+ */
+const forEachEdit1 = (word, visit) => {
+  for (let i = 0; i <= word.length; i += 1) {
+    const left = word.slice(0, i);
+    const right = word.slice(i);
+    if (right) visit(left + right.slice(1));
+    if (right.length > 1) visit(left + right[1] + right[0] + right.slice(2));
+    for (const c of LETTERS) {
+      if (right) visit(left + c + right.slice(1));
+      visit(left + c + right);
+    }
+  }
+};
+
+/**
  * All strings at edit distance 1 (delete, transpose, replace, insert).
  * @param {string} word - Lower-case word
  * @returns {Set<string>} Edits
@@ -79,16 +99,7 @@ const lowerBound = (sorted, key) => {
  */
 export const edits1 = (word) => {
   const out = new Set();
-  for (let i = 0; i <= word.length; i += 1) {
-    const left = word.slice(0, i);
-    const right = word.slice(i);
-    if (right) out.add(left + right.slice(1));
-    if (right.length > 1) out.add(left + right[1] + right[0] + right.slice(2));
-    for (const c of LETTERS) {
-      if (right) out.add(left + c + right.slice(1));
-      out.add(left + c + right);
-    }
-  }
+  forEachEdit1(word, (candidate) => out.add(candidate));
   out.delete(word);
   return out;
 };
@@ -178,13 +189,16 @@ export const correctionsFor = (dict, lower) => {
   if (scored.length === 0 && lower.length >= 3 && lower.length <= 10) {
     const seen = new Set();
     for (const e of one.keys()) {
-      for (const e2 of edits1(e)) {
+      // Most second edits are not words. Check them immediately instead of allocating a Set
+      // containing hundreds of non-words for every first edit. `seen` still keeps only the first
+      // occurrence of each dictionary match, in the same order as edits1's insertion-ordered Set.
+      forEachEdit1(e, (e2) => {
         const entry = dict.byLower.get(e2);
-        if (entry && e2 !== lower && !seen.has(e2)) {
+        if (entry && e2 !== e && e2 !== lower && !seen.has(e2)) {
           seen.add(e2);
           scored.push({ entry, score: Math.log2(entry.rank + 2) + 8 });
         }
-      }
+      });
     }
   }
   return scored.sort((a, b) => a.score - b.score).map((s) => s.entry);
